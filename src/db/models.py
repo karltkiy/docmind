@@ -49,7 +49,15 @@ class Document(Base):
     file_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     content_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[DocumentStatus] = mapped_column(
-        SAEnum(DocumentStatus, name="document_status", native_enum=True),
+        SAEnum(
+            DocumentStatus,
+            name="document_status",
+            native_enum=True,
+            # Persist the enum *values* ("processing"), not the member names
+            # ("PROCESSING"), to match the labels defined in the initial
+            # Alembic migration and the existing PostgreSQL enum type.
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         default=DocumentStatus.PROCESSING,
         nullable=False,
         index=True,
