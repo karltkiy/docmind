@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: docmind_db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: docmind
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "docmind"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: docmind_redis
+    ports:
+      - "6379:6379"
+
+  fastapi_app:
+    build: .
+    container_name: docmind_api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000
+
+  worker:
+    build: .
+    container_name: docmind_worker
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    command: arq src.worker.tasks.WorkerSettings
+
+  streamlit_demo:
+    build: .
+    container_name: docmind_demo
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    command: streamlit run demo/app_ui.py --server.port 8501 --server.address 0.0.0.0
+
+volumes:
+  pg_data:
