@@ -1,0 +1,111 @@
+name: Deploy Production
+
+# Deploys the image published by the "Release Image" workflow to the VPS.
+# The `production` environment should require manual approval and hold the
+# SSH + registry secrets.
+on:
+  workflow_run:
+    workflows: ["Release Image"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (e.g. sha-<full-sha> or a semver tag)"
+        required: true
+        type: string
+      image_digest:
+        description: "Optional sha256 digest to verify after rollout"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# Never run two production deploys at once, and never cancel one mid-flight.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    environment:
+      name: production
+      url: ${{ secrets.PRODUCTION_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image tag
+        id: image
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_TAG: ${{ inputs.image_tag }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            tag="${DISPATCH_TAG}"
+          else
+            tag="sha-${HEAD_SHA}"
+          fi
+          if [ -z "${tag}" ]; then
+            echo "Unable to resolve an image tag." >&2
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Resolved image tag: ${tag}"
+
+      - name: Skip deployment notification
+        if: ${{ secrets.SSH_HOST != '' }}
+        run: |
+          echo "⚠️ SSH_HOST secret is missing. Skipping VPS deployment." >> "$GITHUB_STEP_SUMMARY"
+      
+      - name: Copy deployment assets to the server
+        if: ${{ secrets.SSH_HOST != '' }}
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: "docker-compose.prod.yml,.github/deploy/remote-deploy.sh"
+          target: ${{ secrets.DEPLOY_PATH }}
+          overwrite: true
+          rm: false
+
+      - name: Run remote deployment
+        id: deploy
+        if: ${{ secrets.SSH_HOST != '' }}
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          GHCR_USER: ${{ secrets.GHCR_USER }}
+          GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          DOCMIND_IMAGE: ghcr.io/${{ github.repository }}
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: GHCR_USER,GHCR_TOKEN,DOCMIND_IMAGE,IMAGE_TAG,IMAGE_DIGEST,DEPLOY_PATH
+          command_timeout: 30m
+          script: |
+            set -euo pipefail
+            cd "${DEPLOY_PATH}"
+            bash .github/deploy/remote-deploy.sh
+
+      - name: Deployment summary
+        if: always() && steps.deploy.outcome != 'skipped'
+        run: |
+          {
+            echo "### Production deployment"
+            echo ""
+            echo "- **Image:** \`ghcr.io/${{ github.repository }}:${{ steps.image.outputs.tag }}\`"
+            echo "- **Result:** ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"

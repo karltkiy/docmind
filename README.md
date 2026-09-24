@@ -28,6 +28,9 @@ orchestrated with Docker Compose.
 ![OpenAI](https://img.shields.io/badge/OpenAI-compatible-412991?logo=openai&logoColor=white)
 ![Ollama](https://img.shields.io/badge/Ollama-local%20LLM-000000?logo=ollama&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+![CI](https://github.com/karltkiy/docmind/actions/workflows/ci.yml/badge.svg)
+![Security](https://github.com/karltkiy/docmind/actions/workflows/security.yml/badge.svg)
+![Release Image](https://github.com/karltkiy/docmind/actions/workflows/release-image.yml/badge.svg)
 ![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0%20async-D71F00?logo=sqlalchemy&logoColor=white)
 ![Ruff](https://img.shields.io/badge/Lint-Ruff-261230?logo=ruff&logoColor=white)
 ![mypy](https://img.shields.io/badge/Types-mypy-2A6DB5?logo=python&logoColor=white)
@@ -261,17 +264,76 @@ mypy src        # static typing (pydantic plugin enabled)
 The test suite covers the SSE frame contract, source serialization, text
 chunking invariants, file parsing, and vector-store query construction.
 
+## CI/CD & Deployment
+
+Delivery is fully automated: pull requests are gated, `main` produces a signed
+image, and an approved deploy rolls out to the VPS with automatic rollback.
+
+```mermaid
+flowchart LR
+    PR["Pull Request"] --> CI["CI: Ruff, mypy, pytest + coverage"]
+    PR --> SEC["Security: CodeQL, pip-audit, Trivy, gitleaks"]
+    CI --> MERGE["Merge to main"]
+    SEC --> MERGE
+    MERGE --> IMG["Build + scan image"]
+    IMG --> GHCR["Push to ghcr.io (SBOM + provenance)"]
+    GHCR --> GATE["Approve production environment"]
+    GATE --> DEPLOY["SSH deploy: backup, migrate, up"]
+    DEPLOY --> CHECK["Verify /health, roll back on failure"]
+```
+
+| Workflow | Trigger | Purpose |
+| --- | --- | --- |
+| [`ci.yml`](.github/workflows/ci.yml) | PR / push to `main` | Ruff, mypy, pytest with a 70% coverage gate |
+| [`security.yml`](.github/workflows/security.yml) | PR / push / weekly | CodeQL, pip-audit, Dependency Review, gitleaks, Trivy FS |
+| [`release-image.yml`](.github/workflows/release-image.yml) | push to `main` / tags | Build, Trivy-scan, push to GHCR with SBOM + provenance |
+| [`deploy.yml`](.github/workflows/deploy.yml) | after release / manual | Gated SSH rollout to the VPS with health verify + rollback |
+
+**Production topology:** [`docker-compose.prod.yml`](docker-compose.prod.yml)
+runs a standalone stack with no published database/Redis ports, log rotation,
+and resource limits; only the API is bound to `127.0.0.1:8000` for a reverse
+proxy. The rollout logic lives in
+[`.github/deploy/remote-deploy.sh`](.github/deploy/remote-deploy.sh).
+
+### Required GitHub configuration
+
+| Kind | Name | Purpose |
+| --- | --- | --- |
+| Environment | `production` | Required reviewers (manual approval gate) |
+| Secret | `SSH_HOST`, `SSH_USER`, `SSH_KEY`, `SSH_PORT`, `DEPLOY_PATH` | VPS access + repo location |
+| Secret | `GHCR_USER`, `GHCR_PULL_TOKEN` | Pull the private image on the VPS |
+| Variable/Secret | `PRODUCTION_URL` | Environment link in the Actions UI |
+
+The VPS keeps its own `.env` (application secrets such as `POSTGRES_PASSWORD`
+and `OPENAI_API_KEY`); those values are never stored in this repository.
+
+### Local commands
+
+```bash
+make install   # editable install + pre-commit hooks
+make check     # lint + format + types + coverage (same gates as CI)
+make up        # docker compose up --build -d
+make cov       # pytest with coverage report
+```
+
 ## Repository Structure
 
 ```text
 docmind/
+├── .github/
+│   ├── dependabot.yml               # Weekly pip / actions / docker updates
+│   ├── deploy/remote-deploy.sh      # VPS rollout + rollback logic
+│   └── workflows/                   # ci · security · release-image · deploy
 ├── alembic/
 │   ├── env.py                       # Async Alembic environment
 │   └── versions/0001_initial.py     # vector extension + HNSW index
 ├── alembic.ini
 ├── docker-compose.yml               # db · redis · api · worker · ollama · demo
+├── docker-compose.prod.yml          # Hardened production stack
 ├── Dockerfile                       # Multi-stage, non-root runtime
-├── pyproject.toml                   # Deps, Ruff, mypy, pytest config
+├── Makefile                         # Local task runner (mirrors CI)
+├── .pre-commit-config.yaml          # Ruff, mypy, gitleaks, whitespace hooks
+├── pyproject.toml                   # Deps, Ruff, mypy, pytest, coverage config
 ├── .env.example                     # Documented configuration template
 ├── demo/
 │   └── app_ui.py                    # Streamlit demo client

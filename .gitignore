@@ -9,6 +9,17 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
+# Coverage artifacts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Deployment state and backups (written on the production host)
+.deployed_image_tag
+.previous_image_tag
+backups/
+
 .env
 .env.local
 *.pem

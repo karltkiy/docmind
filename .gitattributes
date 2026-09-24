@@ -1,0 +1,32 @@
+# Normalise line endings across platforms.
+* text=auto eol=lf
+
+# Explicit text files.
+*.py       text diff=python
+*.md       text
+*.toml     text
+*.yml      text
+*.yaml     text
+*.json     text
+*.ini      text
+Makefile   text
+Dockerfile text
+
+# Shell and container entrypoints must keep LF endings.
+*.sh       text eol=lf
+*.bash     text eol=lf
+
+# Generated / binary artifacts are not diffable.
+*.pdf      binary
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.gif      binary
+*.ico      binary
+*.woff     binary
+*.woff2    binary
+
+# Keep generated and vendored paths out of language statistics and diffs.
+alembic/versions/*.py linguist-generated=true
+coverage.xml          linguist-generated=true
+uv.lock               linguist-generated=true

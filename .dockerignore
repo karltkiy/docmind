@@ -1,4 +1,5 @@
 .git
+.github
 .gitignore
 .venv
 venv
@@ -9,8 +10,11 @@ __pycache__
 data
 uploads
 tests
+backups
 .pytest_cache
 .mypy_cache
 .ruff_cache
+.coverage
+coverage.xml
 plans
 *.md.bak
