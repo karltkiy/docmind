@@ -1,36 +1,59 @@
-from typing import List, Optional
+"""pgvector-backed similarity search over document chunks."""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql import func
-from .models import DocumentChunk
-from .config import settings
+
+from ..db.models import DocumentChunk
+
+
+@dataclass(slots=True)
+class SearchResult:
+    """A single retrieval hit with its cosine similarity score."""
+
+    chunk: DocumentChunk
+    score: float
+
 
 class VectorStore:
+    """Stateless helper for vector similarity queries."""
+
     @staticmethod
     async def search_chunks(
         session: AsyncSession,
         query_embedding: list[float],
         top_k: int = 4,
-        document_ids: Optional[list[str]] = None
-    ) -> List[DocumentChunk]:
-        """
-        Perform a vector similarity search using pgvector.
-        
+        document_ids: list[str] | None = None,
+    ) -> list[SearchResult]:
+        """Return the ``top_k`` most similar chunks.
+
         Args:
-            session: The SQLAlchemy AsyncSession.
-            query_embedding: The embedding of the user's query.
-            top_k: Number of top results to return.
-            document_ids: Optional list of document IDs to filter by.
+            session: Active async DB session.
+            query_embedding: Embedding of the user query.
+            top_k: Maximum number of results.
+            document_ids: Optional list of document UUID strings to constrain the
+                search to.
         """
-        # Construct the base query
-        # pgvector's <-> operator is for L2 distance, <=> is for cosine distance.
-        # Since we are using cosine similarity for RAG, we use <=>
-        query = select(DocumentChunk).order_by(
-            DocumentChunk.embedding.cosine_distance(query_embedding)
-        ).limit(top_k)
+        distance = DocumentChunk.embedding.cosine_distance(query_embedding).label(
+            "distance"
+        )
+        statement = select(DocumentChunk, distance)
 
         if document_ids:
-            query = query.where(DocumentChunk.document_id.in_(document_ids))
+            try:
+                parsed_ids = [uuid.UUID(str(doc_id)) for doc_id in document_ids]
+            except ValueError as exc:
+                raise ValueError("document_ids must contain valid UUIDs.") from exc
+            statement = statement.where(DocumentChunk.document_id.in_(parsed_ids))
 
-        result = await session.execute(query)
-        return result.scalars().all()
+        statement = statement.order_by(distance).limit(top_k)
+
+        rows = (await session.execute(statement)).all()
+        return [
+            SearchResult(chunk=chunk, score=1.0 - float(dist))
+            for chunk, dist in rows
+        ]

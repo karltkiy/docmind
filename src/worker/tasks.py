@@ -1,66 +1,109 @@
-import asyncio
+"""Arq background tasks for document parsing and embedding."""
+
+from __future__ import annotations
+
 import logging
-from typing import List
-from .models import Document, DocumentChunk
-from .base import SessionLocal
-from .services.chunker import TextChunker
-from .services.rag_engine import rag_engine
-from .services.vector_store import VectorStore
-from .config import settings
+import uuid
+from pathlib import Path
+
+from sqlalchemy import delete, select, update
+
+from ..config import settings
+from ..db.base import SessionLocal
+from ..db.models import Document, DocumentChunk, DocumentStatus
+from ..services.chunker import TextChunker
+from ..services.parser import extract_text
+from ..services.rag_engine import rag_engine
+from .queue import redis_settings as build_redis_settings
 
 logger = logging.getLogger(__name__)
 
-async def process_document_task(document_id: str):
+
+async def process_document_task(ctx: dict, document_id: str) -> dict:
+    """Parse a stored document, embed its chunks and persist them.
+
+    Returns a small summary dict on success. On failure the document is marked
+    as ``failed`` with the error message and the exception re-raised so arq can
+    retry according to ``max_tries``.
     """
-    Background task to process a document:
-    1. Fetch document from DB
-    2. Chunk text
-    3. Generate embeddings
-    4. Save chunks to DB
-    """
-    from sqlalchemy.ext.asyncio import AsyncSession
-    from sqlalchemy import select
+    doc_uuid = uuid.UUID(document_id)
 
     async with SessionLocal() as session:
-        # Fetch the document
-        result = await session.execute(select(Document).where(Document.id == document_id))
-        doc = result.scalar_one()
-        
-        logger.info(f"Starting processing for document {doc.id}")
-        
-        # In a real app, we'd fetch the raw content from a storage (S3/Local)
-        # For this demo, we'll simulate the content retrieval.
-        raw_content = f"This is the content for the document named {doc.filename}."
-        
-        chunker = TextChunker()
-        chunks_text = chunker.chunk_text(raw_content)
-        
-        count = 0
-        for i, text in enumerate(chunks_text):
-            # Generate embedding
-            embedding = await rag_engine.get_embedding(text)
-            
-            # Create chunk record
-            new_chunk = DocumentChunk(
-                document_id=doc.id,
-                chunk_index=i,
-                content=text,
-                metadata_={"source": doc.filename, "index": i},
-                embedding=embedding
+        document = (
+            await session.execute(select(Document).where(Document.id == doc_uuid))
+        ).scalar_one_or_none()
+        if document is None:
+            raise ValueError(f"Document {document_id} not found.")
+
+        filename = document.filename
+        file_path = document.file_path
+        logger.info("Processing document %s (%s)", doc_uuid, filename)
+
+        try:
+            if not file_path:
+                raise ValueError("Document has no stored file to process.")
+
+            text = extract_text(Path(file_path))
+            if not text:
+                raise ValueError("No extractable text found in document.")
+
+            chunker = TextChunker(
+                chunk_size=settings.CHUNK_SIZE, overlap=settings.CHUNK_OVERLAP
             )
-            session.add(new_chunk)
-            count += 1
-        
-        doc.status = "completed"
-        session.commit()
-        logger.info(f"Finished processing document {doc.id} with {count} chunks.")
+            chunk_texts = chunker.chunk_text(text)
+            if not chunk_texts:
+                raise ValueError("Document produced no chunks.")
+
+            embeddings = await rag_engine.get_embeddings(chunk_texts)
+            if len(embeddings) != len(chunk_texts):
+                raise ValueError("Embedding count does not match chunk count.")
+
+            # Idempotent re-processing: drop any previously generated chunks.
+            await session.execute(
+                delete(DocumentChunk).where(DocumentChunk.document_id == doc_uuid)
+            )
+            for index, (content, embedding) in enumerate(
+                zip(chunk_texts, embeddings, strict=True)
+            ):
+                session.add(
+                    DocumentChunk(
+                        document_id=doc_uuid,
+                        chunk_index=index,
+                        content=content,
+                        metadata_={"source": filename, "index": index},
+                        embedding=embedding,
+                    )
+                )
+
+            await session.execute(
+                update(Document)
+                .where(Document.id == doc_uuid)
+                .values(status=DocumentStatus.COMPLETED, error=None)
+            )
+            await session.commit()
+            logger.info(
+                "Finished document %s with %d chunks.", doc_uuid, len(chunk_texts)
+            )
+            return {"document_id": str(doc_uuid), "chunks": len(chunk_texts)}
+
+        except Exception as exc:  # noqa: BLE001 - persist failure details
+            await session.rollback()
+            logger.exception("Processing failed for document %s", doc_uuid)
+            await session.execute(
+                update(Document)
+                .where(Document.id == doc_uuid)
+                .values(status=DocumentStatus.FAILED, error=str(exc)[:2000])
+            )
+            await session.commit()
+            raise
+
 
 class WorkerSettings:
-    """
-    Arq worker settings.
-    """
-    functions = {
-        "process_document": process_document_task,
-    }
-    # Other settings like redis_url can be pulled from config
-    # but Arq usually takes them from environment or passed in.
+    """Arq worker configuration."""
+
+    functions = [process_document_task]
+    redis_settings = build_redis_settings()
+    max_jobs = 4
+    job_timeout = 600
+    keep_result = 3600
+    max_tries = 3

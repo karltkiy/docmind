@@ -1,95 +1,151 @@
 # DocMind API
 
-DocMind API is a production-ready, enterprise-grade RAG (Retrieval-Augmented Generation) microservice built with Python 3.12, FastAPI, and PostgreSQL with `pgvector`.
+DocMind API is a production-ready, enterprise-grade RAG (Retrieval-Augmented Generation)
+microservice built with Python 3.12, FastAPI, and PostgreSQL with `pgvector`.
 
 ## 🚀 Features
 
-- **Asynchronous Architecture**: Built with FastAPI and `asyncpg` for high-concurrency performance.
-- **Robust Data Processing**: Background task processing using `Arq` and `Redis` for document parsing and embedding generation.
-- **Pluggable RAG Engine**: Seamlessly switch between local (Ollama) and cloud (OpenAI) providers via environment configuration.
-- **Vector Search**: High-performance similarity search using `pgvector` with HNSW indexing.
-- **Streaming Responses**: Real-time chat experience using Server-Sent Events (SSE).
-- **Interactive Demo**: A built-in Streamlit UI for easy testing and demonstration.
+- **Asynchronous Architecture**: FastAPI + `asyncpg` + SQLAlchemy 2.0 `AsyncSession`.
+- **Background Processing**: `Arq` + `Redis` worker for parsing, chunking and embedding.
+- **Pluggable RAG Engine**: switch between local (Ollama) and cloud (OpenAI) providers via config.
+- **Vector Search**: pgvector cosine similarity with an HNSW index.
+- **Streaming Responses**: server-sent, token-by-token chat via `StreamingResponse`.
+- **Schema Migrations**: Alembic (async) with the `vector` extension and HNSW index.
+- **Interactive Demo**: Streamlit UI included.
 
 ## 🛠 Tech Stack
 
-- **Language**: Python 3.12+
-- **Framework**: FastAPI
-- **Database**: PostgreSQL 16 + `pgvector`
-- **Task Queue**: Arq + Redis
-- **AI Models**: OpenAI (GPT-4o-mini, text-embedding-3-small) or Ollama (Llama 3.1, nomic-embed-text)
-- **Infrastructure**: Docker & Docker Compose
+| Concern | Technology |
+| --- | --- |
+| Language | Python 3.12+ |
+| Framework | FastAPI (async), Pydantic v2 |
+| Database | PostgreSQL 16 + pgvector |
+| Task queue | Arq + Redis |
+| AI models | OpenAI (`gpt-4o-mini`, `text-embedding-3-small`) or Ollama (`llama3.1:8b`, `nomic-embed-text`) |
+| Infra | Docker & Docker Compose |
 
-## 🚀 Getting Started
+## 📦 Getting Started
 
 ### Prerequisites
-- Docker and Docker Compose installed.
+- Docker and Docker Compose (v2.24+ for optional `env_file`).
 
-### Installation & Setup
+### Run everything
 
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/your-repo/docmind-api.git
-   cd docmind-api
-   ```
+```bash
+cp .env.example .env          # optional; sensible defaults are built in
+docker compose up --build
+```
 
-2. **Configure Environment**:
-   Copy the example environment file and update it with your credentials:
-   ```bash
-   cp .env.example .env
-   ```
+Migrations run automatically before the API starts.
 
-3. **Spin up the infrastructure**:
-   Start all services (Postgres, Redis, Worker, API, and Demo UI) using Docker Compose:
-   ```bash
-   docker compose up --build
-   ```
+- Swagger UI: `http://localhost:8000/docs`
+- Health: `http://localhost:8000/health`
+- Demo UI: `http://localhost:8501`
 
-## 📖 API Documentation
+### Local development
 
-Once the service is running, you can access the interactive API documentation:
-- **Swagger UI**: `http://localhost:8000/docs`
-- **Redoc**: `http://localhost:8000/redoc`
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+docker compose up -d db redis
+alembic upgrade head
+uvicorn src.main:app --reload
+# in another shell
+arq src.worker.tasks.WorkerSettings
+```
 
-## 🚀 Demo UI
+## 🔌 API Endpoints
 
-The Streamlit demo is available at:
-- **Demo UI**: `http://localhost:8501`
+| Method | Path | Description |
+| --- | --- | --- |
+| `POST` | `/api/v1/documents/upload` | Upload a document (`txt`, `md`, `csv`, `json`, `pdf`) → `202` |
+| `GET` | `/api/v1/documents` | List documents |
+| `GET` | `/api/v1/documents/{id}/status` | Processing status + chunk count |
+| `DELETE` | `/api/v1/documents/{id}` | Delete a document, its chunks and stored file |
+| `POST` | `/api/v1/chat/completions` | SSE-streamed, grounded answer |
+| `GET` | `/health` | Liveness + database/Redis health |
+
+### SSE event format
+
+Chat returns `text/event-stream` frames:
+
+```
+data: {"type":"sources","content":[{"document_id":"...","chunk_index":0,"score":0.81,"excerpt":"..."}]}
+
+data: {"type":"token","content":"Hello"}
+
+data: {"type":"done"}
+```
+
+Errors are delivered as `{"type":"error","message":"..."}`.
+
+## ⚙️ Configuration
+
+All settings live in [`src/config.py`](src/config.py:1) and are overridable via environment
+variables or `.env`. Key options:
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `POSTGRES_HOST` / `POSTGRES_PORT` | `localhost` / `5432` | Compose overrides host to `db` |
+| `DATABASE_URL` | derived | Explicit async DSN override |
+| `REDIS_HOST` / `REDIS_PORT` | `localhost` / `6379` | Compose overrides host to `redis` |
+| `EMBEDDING_PROVIDER` / `LLM_PROVIDER` | `openai` | `openai` or `ollama` |
+| `EMBEDDING_MODEL` / `LLM_MODEL` | per provider | Override model names |
+| `EMBEDDING_DIM` | per provider (1536/768) | Must match the model & migration |
+| `OPENAI_API_KEY` | — | Required for OpenAI |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Required for Ollama |
+| `UPLOAD_DIR` | `data/uploads` | Shared volume in Compose |
+| `MAX_UPLOAD_MB` | `25` | Upload size limit |
+
+> **Embedding dimension**: if you switch to a model with a different vector size,
+> update `EMBEDDING_DIM` **and** regenerate the Alembic migration, then re-index.
 
 ## 🏗 Project Structure
 
 ```text
-docmind-api/
-├── .env.example
-├── Dockerfile
-├── docker-compose.yml
-├── pyproject.toml
-├── README.md
+docmind/
 ├── alembic/
+│   ├── env.py                  # Async Alembic environment
+│   └── versions/0001_initial.py
+├── alembic.ini
+├── docker-compose.yml
+├── Dockerfile
+├── pyproject.toml
+├── demo/app_ui.py              # Streamlit UI
 ├── src/
-│   ├── main.py                # FastAPI app initialization
-│   ├── config.py              # Pydantic settings
+│   ├── main.py                 # App factory, lifespan, /health
+│   ├── config.py               # Pydantic settings
+│   ├── api/v1/
+│   │   ├── router.py
+│   │   ├── documents.py
+│   │   └── chat.py
 │   ├── db/
-│   │   ├── base.py            # AsyncEngine & Session setup
-│   │   ├── models.py          # SQLAlchemy models
-│   ├── schemas/               # Pydantic v2 schemas
+│   │   ├── base.py             # Engine/session factory
+│   │   └── models.py           # Document, DocumentChunk
+│   ├── schemas/                # Pydantic v2 schemas
 │   ├── services/
-│   │   ├── rag_engine.py      # LLM & Embedding logic
-│   │   ├── vector_store.py    # pgvector queries
-│   │   ├── chunker.py         # Text processing
-│   ├── worker/
-│   │   ├── tasks.py           # Arq background tasks
-│   ├── api/
-│   │   ├── v1/
-│   │   │   ├── router.py      # Main API Router
-│   │   │   ├── documents.py   # Upload & Status
-│   │   │   ├── chat.py        # SSE Chat Streaming
-├── demo/
-│   ├── app_ui.py             # Streamlit UI
+│   │   ├── rag_engine.py       # Provider-agnostic LLM/embeddings
+│   │   ├── vector_store.py     # pgvector search
+│   │   ├── chunker.py          # Token-aware chunking
+│   │   └── parser.py           # PDF/TXT extraction
+│   └── worker/
+│       ├── tasks.py            # Arq tasks + WorkerSettings
+│       └── queue.py            # Shared Redis pool
+└── tests/
 ```
 
-## 🛠 Development
+## 🧪 Tests
 
-- **Linting & Formatting**: Use `ruff` for fast linting and formatting.
-- **Type Checking**: Use `mypy` to ensure strict type safety.
-- **Migrations**: Use `alembic` to manage database schema changes.
+```bash
+pip install -e ".[dev]"
+pytest
+ruff check .
+mypy src
+```
+
+## 🛠 Troubleshooting
+
+- **`/health` returns `degraded`**: Postgres or Redis is unreachable — check `docker compose ps`.
+- **Uploads stay `processing`**: ensure the `worker` container is running and can reach Redis.
+- **`415 Unsupported Media Type`**: only `txt`, `md`, `csv`, `json`, `pdf` are accepted.
+- **Dimension mismatch from pgvector**: set `EMBEDDING_DIM` to match your model and re-run migrations.

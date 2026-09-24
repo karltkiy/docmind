@@ -1,68 +1,98 @@
-version: '3.8'
-
 services:
   db:
     image: pgvector/pgvector:pg16
     container_name: docmind_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-docmind}
     ports:
       - "5432:5432"
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: docmind
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "docmind"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-docmind}"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   redis:
     image: redis:7-alpine
     container_name: docmind_redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
-  fastapi_app:
+  api:
     build: .
     container_name: docmind_api
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      POSTGRES_HOST: db
+      REDIS_HOST: redis
     ports:
       - "8000:8000"
-    env_file:
-      - .env
+    volumes:
+      - uploads:/data/uploads
     depends_on:
       db:
         condition: service_healthy
       redis:
-        condition: service_started
-    command: uvicorn src.main:app --host 0.0.0.0 --port 8000
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn src.main:app --host 0.0.0.0 --port 8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   worker:
     build: .
     container_name: docmind_worker
+    restart: unless-stopped
     env_file:
-      - .env
+      - path: .env
+        required: false
+    environment:
+      POSTGRES_HOST: db
+      REDIS_HOST: redis
+    volumes:
+      - uploads:/data/uploads
     depends_on:
       db:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     command: arq src.worker.tasks.WorkerSettings
 
-  streamlit_demo:
+  demo:
     build: .
     container_name: docmind_demo
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DOCMIND_API_URL: http://api:8000/api/v1
     ports:
       - "8501:8501"
-    env_file:
-      - .env
     depends_on:
-      db:
+      api:
         condition: service_healthy
-      redis:
-        condition: service_started
     command: streamlit run demo/app_ui.py --server.port 8501 --server.address 0.0.0.0
 
 volumes:
   pg_data:
+  uploads:

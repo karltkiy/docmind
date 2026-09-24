@@ -1,38 +1,49 @@
-import sqlalchemy
+"""Async SQLAlchemy engine, session factory and FastAPI dependency."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncGenerator
+
 from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
     AsyncSession,
     async_sessionmaker,
-    AsyncEngine,
-    create_async_engine
+    create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
-from typing import Any
-from .config import settings
 
-# Construct the database URL
-db_url = f"postgresql+asyncpg://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
+from ..config import settings
 
-# Create the engine
+
+class Base(DeclarativeBase):
+    """Declarative base class shared by all ORM models."""
+
+
 engine: AsyncEngine = create_async_engine(
-    db_url,
+    settings.database_url,
     echo=settings.DEBUG,
+    pool_pre_ping=True,
     pool_size=20,
     max_overflow=10,
 )
 
-# Create the session factory
-SessionLocal = async_sessionmaker(
+SessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(
     bind=engine,
-    autocommit=False,
-    autoflush=False,
     expire_on_commit=False,
+    autoflush=False,
 )
 
-# Base class for models
-class Base(DeclarativeBase):
-    pass
 
-# Dependency for FastAPI
-async def get_db_session() -> AsyncSession:
+async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
+    """FastAPI dependency yielding a request-scoped async session."""
     async with SessionLocal() as session:
-        yield session
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
+
+
+async def dispose_engine() -> None:
+    """Dispose of the connection pool on application shutdown."""
+    await engine.dispose()
