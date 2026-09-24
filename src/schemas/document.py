@@ -5,23 +5,19 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict
 
-
-class DocumentBase(BaseModel):
-    filename: str = Field(..., min_length=1, max_length=255)
+from ..db.models import DocumentStatus
 
 
 class DocumentResponse(BaseModel):
+    """Representation of a stored document and its processing state."""
+
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     filename: str
-    status: str
+    status: DocumentStatus
     chunk_count: int = 0
     error: str | None = None
     created_at: datetime | None = None
-
-    model_config = {"from_attributes": True}
-
-
-class DocumentUploadResponse(DocumentResponse):
-    """Response returned immediately after an upload is accepted."""

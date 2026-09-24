@@ -1,4 +1,9 @@
-FROM python:3.12-slim
+# syntax=docker/dockerfile:1
+
+# ---------------------------------------------------------------------------
+# Builder: compiles wheels that need a toolchain (asyncpg, etc.).
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -7,23 +12,38 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# System dependencies required to build asyncpg / psycopg and for healthchecks.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        build-essential \
-        libpq-dev \
-        curl \
+    && apt-get install -y --no-install-recommends build-essential libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Project metadata and source (needed by the hatchling build backend).
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY alembic ./alembic
 COPY alembic.ini ./
 COPY demo ./demo
 
-RUN pip install --upgrade pip \
-    && pip install .
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --upgrade pip \
+    && /opt/venv/bin/pip install ".[demo]"
+
+# ---------------------------------------------------------------------------
+# Runtime: slim image without any build toolchain.
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:$PATH"
+
+# curl is required by the Compose healthcheck.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /app /app
 
 # Non-root runtime user with a writable upload directory.
 RUN useradd --create-home --uid 1000 appuser \

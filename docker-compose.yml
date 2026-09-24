@@ -5,7 +5,8 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      # Required: no insecure fallback password is provided. Set it in .env.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set (see .env.example)}
       POSTGRES_DB: ${POSTGRES_DB:-docmind}
     ports:
       - "5432:5432"
@@ -41,6 +42,7 @@ services:
       REDIS_HOST: redis
       UPLOAD_DIR: /data/uploads
       OLLAMA_BASE_URL: http://ollama:11434
+      DEBUG: ${DEBUG:-false}
     ports:
       - "8000:8000"
     volumes:
@@ -74,6 +76,7 @@ services:
       REDIS_HOST: redis
       UPLOAD_DIR: /data/uploads
       OLLAMA_BASE_URL: http://ollama:11434
+      DEBUG: ${DEBUG:-false}
     volumes:
       - uploads:/data/uploads
     depends_on:

@@ -5,21 +5,25 @@ from __future__ import annotations
 import logging
 import uuid
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import delete, select, update
 
 from ..config import settings
-from ..db.base import SessionLocal
+from ..db.base import SessionLocal, dispose_engine
 from ..db.models import Document, DocumentChunk, DocumentStatus
+from ..logging_config import configure_logging
 from ..services.chunker import TextChunker
 from ..services.parser import extract_text
 from ..services.rag_engine import rag_engine
 from .queue import redis_settings as build_redis_settings
 
+configure_logging(settings.LOG_LEVEL, json_output=settings.LOG_JSON)
+
 logger = logging.getLogger(__name__)
 
 
-async def process_document_task(ctx: dict, document_id: str) -> dict:
+async def process_document_task(ctx: dict[str, Any], document_id: str) -> dict[str, Any]:
     """Parse a stored document, embed its chunks and persist them.
 
     Returns a small summary dict on success. On failure the document is marked
@@ -98,10 +102,25 @@ async def process_document_task(ctx: dict, document_id: str) -> dict:
             raise
 
 
+async def on_startup(ctx: dict[str, Any]) -> None:
+    """Initialise shared resources for the worker process."""
+    await rag_engine.startup()
+    logger.info("Arq worker started.")
+
+
+async def on_shutdown(ctx: dict[str, Any]) -> None:
+    """Release shared resources on worker shutdown."""
+    await rag_engine.shutdown()
+    await dispose_engine()
+    logger.info("Arq worker stopped.")
+
+
 class WorkerSettings:
     """Arq worker configuration."""
 
     functions = [process_document_task]
+    on_startup = on_startup
+    on_shutdown = on_shutdown
     redis_settings = build_redis_settings()
     max_jobs = 4
     job_timeout = 600

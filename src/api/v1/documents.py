@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import func, select
@@ -26,8 +27,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+DbSession = Annotated[AsyncSession, Depends(get_db_session)]
+
 
 async def _chunk_count(session: AsyncSession, document_id: uuid.UUID) -> int:
+    """Return the number of embedded chunks stored for a document."""
     result = await session.execute(
         select(func.count())
         .select_from(DocumentChunk)
@@ -37,12 +41,11 @@ async def _chunk_count(session: AsyncSession, document_id: uuid.UUID) -> int:
 
 
 def _to_response(document: Document, chunk_count: int = 0) -> DocumentResponse:
+    """Map an ORM document and its chunk count to the API schema."""
     return DocumentResponse(
         id=document.id,
         filename=document.filename,
-        status=document.status.value
-        if isinstance(document.status, DocumentStatus)
-        else str(document.status),
+        status=document.status,
         chunk_count=chunk_count,
         error=document.error,
         created_at=document.created_at,
@@ -53,10 +56,22 @@ def _to_response(document: Document, chunk_count: int = 0) -> DocumentResponse:
     "/upload",
     response_model=DocumentResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    summary="Upload a document",
+    description=(
+        "Persist an uploaded document to shared storage and enqueue background "
+        "parsing, chunking and embedding. Returns immediately with a "
+        "`processing` document."
+    ),
+    responses={
+        400: {"description": "The uploaded file is empty."},
+        413: {"description": "The uploaded file exceeds the configured size limit."},
+        415: {"description": "The file extension is not supported."},
+        503: {"description": "The processing queue is unavailable."},
+    },
 )
 async def upload_document(
-    file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db_session),
+    file: Annotated[UploadFile, File(description="Document to ingest (.txt/.md/.csv/.json/.pdf).")],
+    db: DbSession,
 ) -> DocumentResponse:
     """Store an uploaded document and enqueue background processing."""
     try:
@@ -99,7 +114,7 @@ async def upload_document(
     try:
         pool = await get_redis_pool()
         await pool.enqueue_job(process_document_task.__name__, str(document.id))
-    except Exception as exc:  # noqa: BLE001 - surface queue outages clearly
+    except Exception as exc:
         logger.exception("Failed to enqueue document %s", document.id)
         document.status = DocumentStatus.FAILED
         document.error = "Failed to enqueue background processing job."
@@ -112,21 +127,27 @@ async def upload_document(
     return _to_response(document, chunk_count=0)
 
 
-@router.get("", response_model=list[DocumentResponse])
-async def list_documents(
-    db: AsyncSession = Depends(get_db_session),
-) -> list[DocumentResponse]:
+@router.get(
+    "",
+    response_model=list[DocumentResponse],
+    summary="List documents",
+    description="List every stored document, newest first, with chunk counts.",
+)
+async def list_documents(db: DbSession) -> list[DocumentResponse]:
     """List all documents, newest first."""
     result = await db.execute(select(Document).order_by(Document.created_at.desc()))
     documents = result.scalars().all()
-    return [_to_response(doc, await _chunk_count(db, doc.id)) for doc in documents]
+    return [_to_response(document, await _chunk_count(db, document.id)) for document in documents]
 
 
-@router.get("/{document_id}/status", response_model=DocumentResponse)
-async def get_document_status(
-    document_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db_session),
-) -> DocumentResponse:
+@router.get(
+    "/{document_id}/status",
+    response_model=DocumentResponse,
+    summary="Get document status",
+    description="Return the processing status and chunk count for one document.",
+    responses={404: {"description": "Document not found."}},
+)
+async def get_document_status(document_id: uuid.UUID, db: DbSession) -> DocumentResponse:
     """Return the processing status of a single document."""
     document = await db.get(Document, document_id)
     if document is None:
@@ -136,11 +157,14 @@ async def get_document_status(
     return _to_response(document, await _chunk_count(db, document.id))
 
 
-@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_document(
-    document_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db_session),
-) -> None:
+@router.delete(
+    "/{document_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a document",
+    description="Delete a document together with its embedded chunks and stored file.",
+    responses={404: {"description": "Document not found."}},
+)
+async def delete_document(document_id: uuid.UUID, db: DbSession) -> None:
     """Delete a document, its chunks and its stored file."""
     document = await db.get(Document, document_id)
     if document is None:

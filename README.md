@@ -32,11 +32,12 @@ microservice built with Python 3.12, FastAPI, and PostgreSQL with `pgvector`.
 ### Run everything
 
 ```bash
-cp .env.example .env          # optional; sensible defaults are built in
+cp .env.example .env          # required: set POSTGRES_PASSWORD and OPENAI_API_KEY
 docker compose up --build
 ```
 
-Migrations run automatically before the API starts.
+Migrations run automatically before the API starts. The API fails fast at startup
+if `POSTGRES_PASSWORD` (or `DATABASE_URL`) or `OPENAI_API_KEY` is missing.
 
 - Swagger UI: `http://localhost:8000/docs`
 - Health: `http://localhost:8000/health`
@@ -46,7 +47,7 @@ Migrations run automatically before the API starts.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,demo]"   # 'demo' adds Streamlit + requests for the UI
 docker compose up -d db redis
 alembic upgrade head
 uvicorn src.main:app --reload
@@ -87,15 +88,18 @@ variables or `.env`. Key options:
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `POSTGRES_HOST` / `POSTGRES_PORT` | `localhost` / `5432` | Compose overrides host to `db` |
+| `POSTGRES_PASSWORD` | *(none)* | **Required** unless `DATABASE_URL` is set |
 | `DATABASE_URL` | derived | Explicit async DSN override |
 | `REDIS_HOST` / `REDIS_PORT` | `localhost` / `6379` | Compose overrides host to `redis` |
 | `EMBEDDING_PROVIDER` / `LLM_PROVIDER` | `openai` | `openai` or `ollama` |
 | `EMBEDDING_MODEL` / `LLM_MODEL` | per provider | Override model names |
 | `EMBEDDING_DIM` | per provider (1536/768) | Must match the model & migration |
-| `OPENAI_API_KEY` | — | Required for OpenAI |
+| `OPENAI_API_KEY` | *(none)* | **Required** when a provider is `openai`; startup fails fast |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Required for Ollama |
 | `UPLOAD_DIR` | `data/uploads` | Shared volume in Compose |
 | `MAX_UPLOAD_MB` | `25` | Upload size limit |
+| `DEBUG` | `False` | Enables SQL echo; keep `False` in production |
+| `LOG_LEVEL` / `LOG_JSON` | `INFO` / `True` | Structured JSON logging controls |
 
 > **Embedding dimension**: if you switch to a model with a different vector size,
 > update `EMBEDDING_DIM` **and** regenerate the Alembic migration, then re-index.

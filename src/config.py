@@ -4,6 +4,13 @@ All settings are sourced from environment variables (or a local ``.env`` file)
 and validated by Pydantic v2. Derived values such as the async database URL and
 Redis DSN are exposed as computed fields so the rest of the codebase never has
 to build connection strings by hand.
+
+Security posture:
+    * No secret has an in-code default. A missing database credential or a
+      provider API key raises at import time (fail fast) rather than silently
+      degrading at runtime.
+    * ``DEBUG`` defaults to ``False`` so accidental production deploys do not
+      echo SQL or expose verbose error details.
 """
 
 from __future__ import annotations
@@ -11,7 +18,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import computed_field
+from pydantic import computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Provider = Literal["openai", "ollama"]
@@ -42,14 +49,17 @@ class Settings(BaseSettings):
 
     # Application
     APP_NAME: str = "DocMind API"
-    DEBUG: bool = True
+    DEBUG: bool = False
     PORT: int = 8000
     LOG_LEVEL: str = "INFO"
+    LOG_JSON: bool = True
     CORS_ORIGINS: str = "*"
 
     # PostgreSQL
     POSTGRES_USER: str = "postgres"
-    POSTGRES_PASSWORD: str = "postgres"
+    # Intentionally optional: a value is only required when ``DATABASE_URL`` is
+    # not supplied. There is no fallback password by design.
+    POSTGRES_PASSWORD: str | None = None
     POSTGRES_DB: str = "docmind"
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432
@@ -73,12 +83,55 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP: int = 50
 
     # Provider credentials
-    OPENAI_API_KEY: str = ""
+    OPENAI_API_KEY: str | None = None
     OLLAMA_BASE_URL: str = "http://localhost:11434"
 
     # Uploads / storage
     UPLOAD_DIR: str = "data/uploads"
     MAX_UPLOAD_MB: int = 25
+
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+    @model_validator(mode="after")
+    def _validate_database_credentials(self) -> Settings:
+        """Require either an explicit URL or a password — never a hidden default."""
+        if not self.DATABASE_URL and not self.POSTGRES_PASSWORD:
+            raise ValueError(
+                "Database is not configured: set DATABASE_URL or POSTGRES_PASSWORD."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_provider_credentials(self) -> Settings:
+        """Fail fast when the selected provider has no usable credentials."""
+        if (
+            "openai" in {self.EMBEDDING_PROVIDER, self.LLM_PROVIDER}
+            and not self.OPENAI_API_KEY
+        ):
+            raise ValueError(
+                "OPENAI_API_KEY is required when EMBEDDING_PROVIDER or "
+                "LLM_PROVIDER is set to 'openai'."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_chunking(self) -> Settings:
+        """Guard the chunking invariants relied upon by the indexer."""
+        if self.CHUNK_SIZE <= 0:
+            raise ValueError("CHUNK_SIZE must be positive.")
+        if self.CHUNK_OVERLAP < 0:
+            raise ValueError("CHUNK_OVERLAP must be non-negative.")
+        if self.CHUNK_OVERLAP >= self.CHUNK_SIZE:
+            raise ValueError("CHUNK_OVERLAP must be smaller than CHUNK_SIZE.")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_embedding_dim(self) -> Settings:
+        """Ensure the configured vector width is physically meaningful."""
+        if self.EMBEDDING_DIM is not None and self.EMBEDDING_DIM <= 0:
+            raise ValueError("EMBEDDING_DIM must be a positive integer.")
+        return self
 
     # ------------------------------------------------------------------
     # Derived / convenience accessors
@@ -105,32 +158,37 @@ class Settings(BaseSettings):
 
     @property
     def embedding_model(self) -> str:
+        """Resolved embedding model name for the active provider."""
         return self.EMBEDDING_MODEL or _DEFAULT_EMBEDDING_MODELS[self.EMBEDDING_PROVIDER]
 
     @property
     def llm_model(self) -> str:
+        """Resolved chat model name for the active provider."""
         return self.LLM_MODEL or _DEFAULT_LLM_MODELS[self.LLM_PROVIDER]
 
     @property
     def embedding_dim(self) -> int:
+        """Vector width, defaulting per provider."""
         if self.EMBEDDING_DIM is not None:
             return self.EMBEDDING_DIM
         return _DEFAULT_EMBEDDING_DIMS[self.EMBEDDING_PROVIDER]
 
     @property
     def cors_origins(self) -> list[str]:
+        """Parsed list of allowed CORS origins."""
         if self.CORS_ORIGINS.strip() == "*":
             return ["*"]
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
     @property
     def max_upload_bytes(self) -> int:
+        """Maximum accepted upload size in bytes."""
         return self.MAX_UPLOAD_MB * 1024 * 1024
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Return a cached :class:`Settings` instance."""
+    """Return a cached, validated :class:`Settings` instance."""
     return Settings()
 
 

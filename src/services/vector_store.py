@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,7 +28,7 @@ class VectorStore:
         session: AsyncSession,
         query_embedding: list[float],
         top_k: int = 4,
-        document_ids: list[str] | None = None,
+        document_ids: Sequence[UUID] | None = None,
     ) -> list[SearchResult]:
         """Return the ``top_k`` most similar chunks.
 
@@ -35,8 +36,7 @@ class VectorStore:
             session: Active async DB session.
             query_embedding: Embedding of the user query.
             top_k: Maximum number of results.
-            document_ids: Optional list of document UUID strings to constrain the
-                search to.
+            document_ids: Optional document identifiers to constrain the search.
         """
         distance = DocumentChunk.embedding.cosine_distance(query_embedding).label(
             "distance"
@@ -44,16 +44,12 @@ class VectorStore:
         statement = select(DocumentChunk, distance)
 
         if document_ids:
-            try:
-                parsed_ids = [uuid.UUID(str(doc_id)) for doc_id in document_ids]
-            except ValueError as exc:
-                raise ValueError("document_ids must contain valid UUIDs.") from exc
-            statement = statement.where(DocumentChunk.document_id.in_(parsed_ids))
+            statement = statement.where(DocumentChunk.document_id.in_(list(document_ids)))
 
         statement = statement.order_by(distance).limit(top_k)
 
         rows = (await session.execute(statement)).all()
         return [
-            SearchResult(chunk=chunk, score=1.0 - float(dist))
-            for chunk, dist in rows
+            SearchResult(chunk=chunk, score=1.0 - float(distance_value))
+            for chunk, distance_value in rows
         ]
