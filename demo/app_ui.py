@@ -8,7 +8,26 @@ import os
 import requests
 import streamlit as st
 
+# Internal base URL the Streamlit *container* uses to reach the API inside Docker.
+# The hostname is a Compose service name ("api") that resolves only on the Docker
+# network -- it is NOT reachable from the user's browser.
 API_BASE_URL = os.getenv("DOCMIND_API_URL", "http://localhost:8000/api/v1").rstrip("/")
+
+# Browser-reachable server root, used only for the sidebar link. The API's
+# browsable pages live at the server root (``/docs``, ``/health``); the bare
+# ``/api/v1`` prefix is a router mount with no route of its own (404).
+#
+# ``DOCMIND_PUBLIC_API_URL`` should be the host-reachable origin (e.g.
+# ``http://localhost:8000``, the port published by docker-compose.yml). When it
+# is unset, fall back to the internal URL with the Compose service host swapped
+# for ``localhost`` and the ``/api/v1`` prefix stripped.
+_PUBLIC_API_ROOT = os.getenv("DOCMIND_PUBLIC_API_URL", "").rstrip("/")
+if not _PUBLIC_API_ROOT:
+    _PUBLIC_API_ROOT = (
+        API_BASE_URL.replace("//api:", "//localhost:").removesuffix("/api/v1")
+    )
+SWAGGER_URL = f"{_PUBLIC_API_ROOT}/docs"
+
 REQUEST_TIMEOUT = 30
 
 st.set_page_config(page_title="DocMind AI - Demo", page_icon="🧠", layout="wide")
@@ -141,4 +160,4 @@ with tab_chat:
 st.sidebar.markdown("---")
 st.sidebar.markdown("### System Info")
 st.sidebar.info("Backend: FastAPI\nDatabase: pgvector\nWorker: Arq")
-st.sidebar.caption(f"API: {API_BASE_URL}")
+st.sidebar.caption(f"API docs: [{SWAGGER_URL}]({SWAGGER_URL})")
