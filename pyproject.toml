@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "docmind-api"
+name = "docmind"
 version = "1.0.0"
 description = "Enterprise RAG microservice"
 readme = "README.md"
