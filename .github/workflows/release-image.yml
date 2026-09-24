@@ -74,7 +74,7 @@ jobs:
           echo "scan-ref=${first_tag}" >> "$GITHUB_OUTPUT"
 
       - name: Scan image for HIGH/CRITICAL vulnerabilities
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.image.outputs.scan-ref }}
           severity: HIGH,CRITICAL
