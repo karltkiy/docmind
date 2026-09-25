@@ -66,7 +66,7 @@ jobs:
       - name: Audit installed dependencies
         # Fails the job when a known vulnerability is found. Add `--ignore-vuln ID`
         # for a time-boxed, documented exception.
-        run: pip-audit --strict --desc
+        run: pip-audit --strict -r pyproject.toml --desc
 
   dependency-review:
     name: Dependency review

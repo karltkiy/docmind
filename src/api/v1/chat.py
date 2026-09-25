@@ -118,10 +118,12 @@ async def chat_completion(
                 }
             )
 
-            context = "\n\n".join(
-                f"[{index + 1}] {result.chunk.content}"
-                for index, result in enumerate(results)
-            ) or "No relevant context was found."
+            context = (
+                "\n\n".join(
+                    f"[{index + 1}] {result.chunk.content}" for index, result in enumerate(results)
+                )
+                or "No relevant context was found."
+            )
             prompt = _PROMPT_TEMPLATE.format(context=context, question=request.query)
 
             async for token in rag_engine.generate_answer_stream(prompt):

@@ -97,18 +97,13 @@ class Settings(BaseSettings):
     def _validate_database_credentials(self) -> Settings:
         """Require either an explicit URL or a password — never a hidden default."""
         if not self.DATABASE_URL and not self.POSTGRES_PASSWORD:
-            raise ValueError(
-                "Database is not configured: set DATABASE_URL or POSTGRES_PASSWORD."
-            )
+            raise ValueError("Database is not configured: set DATABASE_URL or POSTGRES_PASSWORD.")
         return self
 
     @model_validator(mode="after")
     def _validate_provider_credentials(self) -> Settings:
         """Fail fast when the selected provider has no usable credentials."""
-        if (
-            "openai" in {self.EMBEDDING_PROVIDER, self.LLM_PROVIDER}
-            and not self.OPENAI_API_KEY
-        ):
+        if "openai" in {self.EMBEDDING_PROVIDER, self.LLM_PROVIDER} and not self.OPENAI_API_KEY:
             raise ValueError(
                 "OPENAI_API_KEY is required when EMBEDDING_PROVIDER or "
                 "LLM_PROVIDER is set to 'openai'."

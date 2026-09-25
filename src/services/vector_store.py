@@ -38,9 +38,7 @@ class VectorStore:
             top_k: Maximum number of results.
             document_ids: Optional document identifiers to constrain the search.
         """
-        distance = DocumentChunk.embedding.cosine_distance(query_embedding).label(
-            "distance"
-        )
+        distance = DocumentChunk.embedding.cosine_distance(query_embedding).label("distance")
         statement = select(DocumentChunk, distance)
 
         if document_ids:

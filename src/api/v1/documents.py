@@ -151,9 +151,7 @@ async def get_document_status(document_id: uuid.UUID, db: DbSession) -> Document
     """Return the processing status of a single document."""
     document = await db.get(Document, document_id)
     if document is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found."
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
     return _to_response(document, await _chunk_count(db, document.id))
 
 
@@ -168,9 +166,7 @@ async def delete_document(document_id: uuid.UUID, db: DbSession) -> None:
     """Delete a document, its chunks and its stored file."""
     document = await db.get(Document, document_id)
     if document is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found."
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
 
     if document.file_path:
         try:

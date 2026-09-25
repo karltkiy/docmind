@@ -51,9 +51,7 @@ async def process_document_task(ctx: dict[str, Any], document_id: str) -> dict[s
             if not text:
                 raise ValueError("No extractable text found in document.")
 
-            chunker = TextChunker(
-                chunk_size=settings.CHUNK_SIZE, overlap=settings.CHUNK_OVERLAP
-            )
+            chunker = TextChunker(chunk_size=settings.CHUNK_SIZE, overlap=settings.CHUNK_OVERLAP)
             chunk_texts = chunker.chunk_text(text)
             if not chunk_texts:
                 raise ValueError("Document produced no chunks.")
@@ -66,9 +64,7 @@ async def process_document_task(ctx: dict[str, Any], document_id: str) -> dict[s
             await session.execute(
                 delete(DocumentChunk).where(DocumentChunk.document_id == doc_uuid)
             )
-            for index, (content, embedding) in enumerate(
-                zip(chunk_texts, embeddings, strict=True)
-            ):
+            for index, (content, embedding) in enumerate(zip(chunk_texts, embeddings, strict=True)):
                 session.add(
                     DocumentChunk(
                         document_id=doc_uuid,
@@ -85,9 +81,7 @@ async def process_document_task(ctx: dict[str, Any], document_id: str) -> dict[s
                 .values(status=DocumentStatus.COMPLETED, error=None)
             )
             await session.commit()
-            logger.info(
-                "Finished document %s with %d chunks.", doc_uuid, len(chunk_texts)
-            )
+            logger.info("Finished document %s with %d chunks.", doc_uuid, len(chunk_texts))
             return {"document_id": str(doc_uuid), "chunks": len(chunk_texts)}
 
         except Exception as exc:  # noqa: BLE001 - persist failure details

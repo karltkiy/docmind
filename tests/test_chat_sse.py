@@ -27,9 +27,7 @@ def _chunk(document_id: uuid.UUID, index: int, content: str) -> SimpleNamespace:
 
 def test_serialize_sources_returns_typed_models() -> None:
     document_id = uuid.uuid4()
-    results = [
-        SearchResult(chunk=_chunk(document_id, 0, "some content"), score=0.81234)
-    ]
+    results = [SearchResult(chunk=_chunk(document_id, 0, "some content"), score=0.81234)]
 
     sources = _serialize_sources(results, {document_id: "guide.pdf"})
 

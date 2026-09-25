@@ -23,9 +23,7 @@ API_BASE_URL = os.getenv("DOCMIND_API_URL", "http://localhost:8000/api/v1").rstr
 # for ``localhost`` and the ``/api/v1`` prefix stripped.
 _PUBLIC_API_ROOT = os.getenv("DOCMIND_PUBLIC_API_URL", "").rstrip("/")
 if not _PUBLIC_API_ROOT:
-    _PUBLIC_API_ROOT = (
-        API_BASE_URL.replace("//api:", "//localhost:").removesuffix("/api/v1")
-    )
+    _PUBLIC_API_ROOT = API_BASE_URL.replace("//api:", "//localhost:").removesuffix("/api/v1")
 SWAGGER_URL = f"{_PUBLIC_API_ROOT}/docs"
 
 REQUEST_TIMEOUT = 30
@@ -93,10 +91,7 @@ with tab_chat:
 
     doc_id = st.session_state.get("current_doc_id")
     if not doc_id:
-        st.warning(
-            "Please upload and process a document first in the "
-            "'Document Management' tab."
-        )
+        st.warning("Please upload and process a document first in the 'Document Management' tab.")
     else:
         if "messages" not in st.session_state:
             st.session_state.messages = []
@@ -153,9 +148,7 @@ with tab_chat:
                 except requests.RequestException as exc:
                     st.error(f"Error during chat: {exc}")
 
-                st.session_state.messages.append(
-                    {"role": "assistant", "content": full_response}
-                )
+                st.session_state.messages.append({"role": "assistant", "content": full_response})
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### System Info")
