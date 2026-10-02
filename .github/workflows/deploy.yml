@@ -34,9 +34,14 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
+    # `secrets` is not an allowed context in `environment.url` or in `if`
+    # expressions. PRODUCTION_URL is a public link, so it lives in a repository
+    # variable; the SSH_HOST secret is reduced to a boolean gate in `env`.
+    env:
+      HAS_SSH_HOST: ${{ secrets.SSH_HOST != '' }}
     environment:
       name: production
-      url: ${{ secrets.PRODUCTION_URL }}
+      url: ${{ vars.PRODUCTION_URL }}
     steps:
       - uses: actions/checkout@v7
 
@@ -60,12 +65,12 @@ jobs:
           echo "Resolved image tag: ${tag}"
 
       - name: Skip deployment notification
-        if: ${{ secrets.SSH_HOST != '' }}
+        if: ${{ env.HAS_SSH_HOST != 'true' }}
         run: |
           echo "⚠️ SSH_HOST secret is missing. Skipping VPS deployment." >> "$GITHUB_STEP_SUMMARY"
       
       - name: Copy deployment assets to the server
-        if: ${{ secrets.SSH_HOST != '' }}
+        if: ${{ env.HAS_SSH_HOST == 'true' }}
         uses: appleboy/scp-action@v1.0.0
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -79,7 +84,7 @@ jobs:
 
       - name: Run remote deployment
         id: deploy
-        if: ${{ secrets.SSH_HOST != '' }}
+        if: ${{ env.HAS_SSH_HOST == 'true' }}
         uses: appleboy/ssh-action@v1.2.5
         env:
           GHCR_USER: ${{ secrets.GHCR_USER }}
