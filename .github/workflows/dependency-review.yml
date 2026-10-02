@@ -1,0 +1,32 @@
+name: Dependency Review
+
+# Compares dependencies between the base and head of a pull request and fails
+# when a newly introduced dependency carries a HIGH or CRITICAL advisory.
+#
+# Kept in its own workflow (rather than a conditional job inside security.yml)
+# so that no job is ever reported as "skipped" in push/schedule runs: this
+# workflow simply does not run outside pull requests.
+on:
+  pull_request:
+    branches: [main]
+
+# Least privilege: read the repository and comment on the pull request.
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: dependency-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Review new dependencies
+        uses: actions/dependency-review-action@v5
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
