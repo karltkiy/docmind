@@ -120,7 +120,13 @@ services:
        ollama pull ${LLM_MODEL:-llama3.1:8b}"
 
   demo:
-    build: .
+    # The demo is the only service that needs the optional ``[demo]`` extras
+    # (Streamlit); api/worker build without them to keep the production image
+    # lean.
+    build:
+      context: .
+      args:
+        INSTALL_EXTRAS: "[demo]"
     container_name: docmind_demo
     restart: unless-stopped
     env_file:

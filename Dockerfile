@@ -3,7 +3,9 @@
 # ---------------------------------------------------------------------------
 # Builder: compiles wheels that need a toolchain (asyncpg, etc.).
 # ---------------------------------------------------------------------------
-FROM python:3.14-slim AS builder
+# Pinned to the interpreter the CI matrix and ``requires-python`` target, so
+# production runs the exact version the test suite exercised.
+FROM python:3.12-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -22,13 +24,18 @@ COPY alembic ./alembic
 COPY alembic.ini ./
 COPY demo ./demo
 
+# Optional extras to install. The production image installs none, so the demo
+# dependencies (Streamlit) never ship to production; `docker-compose.yml` builds
+# the demo service with INSTALL_EXTRAS="[demo]".
+ARG INSTALL_EXTRAS=""
+
 # Build the virtualenv with every runtime dependency, then drop pip. The venv
 # is the only Python environment in the runtime image and pip ships vendored
 # copies of dependencies (msgpack, urllib3, ...) that are not used at runtime
 # yet keep triggering container scans.
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip \
-    && /opt/venv/bin/pip install ".[demo]" \
+    && /opt/venv/bin/pip install ".${INSTALL_EXTRAS}" \
     && rm -rf /opt/venv/lib/python*/site-packages/pip \
               /opt/venv/lib/python*/site-packages/pip-*.dist-info \
               /opt/venv/bin/pip /opt/venv/bin/pip3* /opt/venv/bin/easy_install*
@@ -36,7 +43,7 @@ RUN python -m venv /opt/venv \
 # ---------------------------------------------------------------------------
 # Runtime: slim image without any build toolchain.
 # ---------------------------------------------------------------------------
-FROM python:3.14-slim AS runtime
+FROM python:3.12-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -46,8 +53,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # curl is required by the Compose healthcheck.
 # `apt-get upgrade` applies base-image security updates (e.g. libpcre2-8-0
 # CVE-2026-103111). The base image's pip/setuptools are then removed: the venv
-# on PATH provides every runtime dependency, while pip's vendored copies of
-# msgpack/urllib3/setuptools are what the image scan flags.
+# on PATH provides every runtime dependency (the project no longer declares
+# setuptools at runtime), while pip's vendored copies are what the image scan
+# flags.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && apt-get upgrade -y \

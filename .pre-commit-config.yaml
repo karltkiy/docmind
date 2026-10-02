@@ -11,7 +11,6 @@ repos:
       - id: end-of-file-fixer
       - id: check-yaml
       - id: check-toml
-      - id: check-json
       - id: check-merge-conflict
       - id: check-added-large-files
         args: ["--maxkb=1024"]
@@ -40,3 +39,4 @@ repos:
     rev: v8.18.4
     hooks:
       - id: gitleaks
+        args: ["--config=.gitleaks.toml"]

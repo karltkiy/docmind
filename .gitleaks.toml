@@ -1,0 +1,27 @@
+# Gitleaks configuration for DocMind.
+#
+# `.env.example` and the documentation intentionally contain *placeholder*
+# values (e.g. `change-me-strong-password`, `your_openai_api_key_here`) that the
+# `generic-api-key` rule flags as false positives. Real secrets live only in the
+# untracked `.env` files and in GitHub secrets.
+title = "DocMind gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Template/documentation placeholders; never real credentials."
+paths = [
+    '''\.env\.example$''',
+    '''docs/''',
+]
+regexes = [
+    '''change-me''',
+    '''your_.*_here''',
+    '''ci-dummy-key''',
+    '''dummy''',
+    '''test-secret''',
+    '''test-key''',
+    '''test-redis-pass''',
+    '''example\.com''',
+]

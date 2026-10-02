@@ -59,8 +59,10 @@ orchestrated with Docker Compose.
   upload allow-listing + size caps, opaque error payloads, `X-Request-ID`
   correlation, and structured JSON logging.
 - **Operational readiness.** `/health` reports liveness plus live PostgreSQL and
-  Redis probes, the image ships a `HEALTHCHECK`, and Alembic migrations (with the
-  `vector` extension and HNSW index) run automatically before the API boots.
+  Redis probes, the image ships a `HEALTHCHECK`, a startup guard verifies the
+  pgvector width against the configured embedding dimension, and Alembic
+  migrations (with the `vector` extension and HNSW index) run automatically
+  before the API boots.
 
 ## Architecture
 
@@ -161,13 +163,18 @@ curl -N -X POST http://localhost:8000/api/v1/chat/completions \
 
 | Method | Path | Success | Response format |
 | --- | --- | --- | --- |
-| `POST` | `/api/v1/documents/upload` | `202` | JSON `DocumentResponse` (`processing`) — `400` empty, `413` too large, `415` unsupported type, `503` queue down |
-| `GET` | `/api/v1/documents` | `200` | JSON `DocumentResponse[]` (newest first, with chunk counts) |
+| `POST` | `/api/v1/documents/upload` | `202` | JSON `DocumentResponse` (`processing`) — `400` empty, `413` too large, `415` unsupported type, `429` rate-limited, `503` queue down |
+| `GET` | `/api/v1/documents` | `200` | JSON `DocumentResponse[]` (newest first, with chunk counts; `?limit=1..200&offset=`) |
 | `GET` | `/api/v1/documents/{id}/status` | `200` | JSON `DocumentResponse` — `404` not found |
 | `DELETE` | `/api/v1/documents/{id}` | `204` | Empty body — `404` not found |
-| `POST` | `/api/v1/chat/completions` | `200` | `text/event-stream` (SSE frames below) |
-| `GET` | `/health` | `200` / `503` | JSON `{status, database, redis}` |
+| `POST` | `/api/v1/chat/completions` | `200` | `text/event-stream` (SSE frames below) — `429` rate-limited |
+| `GET` | `/health` | `200` / `503` | JSON `{status, database, redis, version, environment, provider_ready}` |
+| `GET` | `/metrics` | `200` | Prometheus exposition (`METRICS_ENABLED`, `404` when disabled) |
 | `GET` | `/` | `200` | JSON `{name, version, docs}` |
+
+Every `/api/v1/*` route requires the `X-API-Key` header when `API_KEY` is set
+(it is mandatory in production). `/health`, `/metrics` and `/` stay open for
+probes and scraping.
 
 **Document status lifecycle:** `processing` → `completed` | `failed`
 (the `error` field carries the failure reason).
@@ -196,10 +203,20 @@ data: {"type":"done"}
 ## Configuration Matrix
 
 All settings are validated in [`src/config.py`](src/config.py:40) and can be
-supplied via environment variables or a `.env` file.
+supplied via environment variables or a `.env` file. Variables marked **Prod**
+are mandatory for the production stack ([`docker-compose.prod.yml`](docker-compose.prod.yml)).
 
 | Variable | Default | Required | Notes |
 | --- | --- | --- | --- |
+| `ENVIRONMENT` | `development` | No | `development`/`staging`/`production`; production enforces the strict posture |
+| `ENABLE_DOCS` | per env | No | OpenAPI/Swagger toggle; disabled in production by default |
+| `METRICS_ENABLED` | `True` | No | Exposes `/metrics` |
+| `API_KEY` | *(none)* | **Prod** | Enables `X-API-Key` auth on `/api/v1/*`; mandatory in production |
+| `API_KEY_HEADER` | `X-API-Key` | No | Header carrying the API key |
+| `RATE_LIMIT_ENABLED` | `True` | No | Process-local, per-client request limits |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | No | Sliding-window length |
+| `UPLOAD_RATE_LIMIT_REQUESTS` | `10` | No | Uploads per window per client |
+| `CHAT_RATE_LIMIT_REQUESTS` | `30` | No | Chat streams per window per client |
 | `POSTGRES_USER` | `postgres` | No | Database role |
 | `POSTGRES_PASSWORD` | *(none)* | **Yes\*** | No insecure fallback; app fails fast |
 | `POSTGRES_DB` | `docmind` | No | Database name |
@@ -207,12 +224,13 @@ supplied via environment variables or a `.env` file.
 | `DATABASE_URL` | derived | No | Explicit async DSN; overrides `POSTGRES_*` (\*either this or the password is required) |
 | `REDIS_HOST` / `REDIS_PORT` | `localhost` / `6379` | No | Compose overrides host to `redis` |
 | `REDIS_DB` | `0` | No | Redis logical database |
-| `REDIS_URL` | derived | No | Explicit DSN; overrides `REDIS_*` |
+| `REDIS_PASSWORD` | *(none)* | **Prod** | Enables `requirepass`; folded into the derived DSN |
+| `REDIS_URL` | derived | No | Explicit DSN; overrides `REDIS_*` (never `localhost` in production) |
 | `EMBEDDING_PROVIDER` | `openai` | No | `openai` or `ollama` |
 | `LLM_PROVIDER` | `openai` | No | `openai` or `ollama` |
 | `EMBEDDING_MODEL` | per provider | No | Defaults: `text-embedding-3-small` / `nomic-embed-text` |
 | `LLM_MODEL` | per provider | No | Defaults: `gpt-4o-mini` / `llama3.1:8b` |
-| `EMBEDDING_DIM` | `1536` / `768` | No | Must match model **and** migration |
+| `EMBEDDING_DIM` | `1536` / `768` | **Prod** | Must match model **and** migration; verified at startup |
 | `RETRIEVAL_TOP_K` | `4` | No | Default chunks retrieved (override per request: 1–20) |
 | `CHUNK_SIZE` | `500` | No | Whitespace-token window |
 | `CHUNK_OVERLAP` | `50` | No | Must be `< CHUNK_SIZE` |
@@ -221,18 +239,28 @@ supplied via environment variables or a `.env` file.
 | `UPLOAD_DIR` | `data/uploads` | No | Shared volume in Compose |
 | `MAX_UPLOAD_MB` | `25` | No | Enforced before persistence |
 | `APP_NAME` | `DocMind API` | No | Shown in OpenAPI metadata |
-| `PORT` | `8000` | No | Reference port for the service |
 | `DEBUG` | `False` | No | Enables SQL echo; keep `False` in production |
 | `LOG_LEVEL` | `INFO` | No | Recognised stdlib level names |
 | `LOG_JSON` | `True` | No | Single-line JSON logs for containers |
-| `CORS_ORIGINS` | `*` | No | Comma-separated origins, or `*` |
+| `CORS_ORIGINS` | `*` | **Prod** | Comma-separated origins; production requires an explicit allow-list (never `*`) |
 
 > **\*\*Fail-fast credentials:** if a provider is `openai` and `OPENAI_API_KEY`
 > is unset, the application refuses to start.
 >
-> **Embedding dimension:** switching to a model with a different vector width
-> requires updating `EMBEDDING_DIM` **and** regenerating the Alembic migration,
-> then re-indexing. A mismatch surfaces as a pgvector dimension error.
+> **Authentication:** in production `API_KEY` is required and the app refuses to
+> boot without it, so the API is never deployed wide open.
+>
+> **Embedding dimension guard:** the width is baked into the
+> `document_chunks.embedding` column by the initial migration. On startup the API
+> and worker compare it with `EMBEDDING_DIM` via
+> [`src/db/schema_guard.py`](src/db/schema_guard.py) and refuse to boot on a
+> mismatch (instead of failing later inside a background job). Switching to a
+> model with a different width therefore requires updating `EMBEDDING_DIM`,
+> regenerating the Alembic migration, and re-indexing.
+>
+> **Production-required variables:** the prod stack aborts unless
+> `EMBEDDING_DIM` and a non-`*` `CORS_ORIGINS` are set in the server-side `.env`.
+> See the [production runbook](#production-runbook).
 
 ## Development & Quality Assurance
 
@@ -280,23 +308,40 @@ flowchart LR
     MERGE --> IMG["Build + scan image"]
     IMG --> GHCR["Push to ghcr.io (SBOM + provenance)"]
     GHCR --> GATE["Approve production environment"]
-    GATE --> DEPLOY["SSH deploy: backup, migrate, up"]
+    GATE --> DEPLOY["SSH deploy: mandatory backup, migrate, up"]
     DEPLOY --> CHECK["Verify /health, roll back on failure"]
 ```
 
 | Workflow | Trigger | Purpose |
 | --- | --- | --- |
-| [`ci.yml`](.github/workflows/ci.yml) | PR / push to `main` | Ruff, mypy, pytest with a 70% coverage gate |
+| [`ci.yml`](.github/workflows/ci.yml) | PR / push to `main` | Ruff, mypy, pytest (60% coverage) + a `pgvector` job running `alembic upgrade head`, `alembic check` and the integration suite |
 | [`security.yml`](.github/workflows/security.yml) | PR / push / weekly | CodeQL, pip-audit, gitleaks, Trivy FS |
 | [`dependency-review.yml`](.github/workflows/dependency-review.yml) | PR to `main` | Fails when a new dependency has a HIGH/CRITICAL advisory |
 | [`release-image.yml`](.github/workflows/release-image.yml) | push to `main` / tags | Build, Trivy-scan, push to GHCR with SBOM + provenance |
-| [`deploy.yml`](.github/workflows/deploy.yml) | after release / manual | Gated SSH rollout to the VPS with health verify + rollback |
+| [`deploy.yml`](.github/workflows/deploy.yml) | after release / manual | Gated SSH rollout: mandatory backup, migrations, health verify + rollback (fails loudly when the VPS is not configured) |
 
 **Production topology:** [`docker-compose.prod.yml`](docker-compose.prod.yml)
 runs a standalone stack with no published database/Redis ports, log rotation,
-and resource limits; only the API is bound to `127.0.0.1:8000` for a reverse
-proxy. The rollout logic lives in
+resource limits and container hardening (`no-new-privileges`, dropped
+capabilities, read-only root filesystem for the app services); only the API is
+bound to `127.0.0.1:8000` for a reverse proxy (see
+[`deploy/nginx/docmind.conf.example`](deploy/nginx/docmind.conf.example) for an
+SSE-aware nginx config). Images are referenced by immutable digest
+(`repo@sha256:...`), and migrations are **not** run on container start: the
+rollout applies them once, explicitly. **Ollama is opt-in** behind the `ollama`
+Compose profile: cloud-only (OpenAI) deployments never start it, while Ollama
+users run with `--profile ollama` and the rollout waits for the models before the
+API can report healthy. The rollout logic lives in
 [`.github/deploy/remote-deploy.sh`](.github/deploy/remote-deploy.sh).
+
+**Production `.env` requirements:** the stack fails fast unless `API_KEY`,
+`REDIS_PASSWORD`, `EMBEDDING_DIM` (matching the model *and* the migration) and an
+explicit `CORS_ORIGINS` are set. Do not set `DATABASE_URL`/`REDIS_URL` to a
+`localhost` URL — the deploy script rejects it so the Compose service hosts
+(`db`/`redis`) are used. A startup guard
+([`src/db/schema_guard.py`](src/db/schema_guard.py)) compares the configured
+vector width with the `document_chunks.embedding` column and refuses to boot on a
+mismatch, instead of failing later with an opaque pgvector error.
 
 ### Required GitHub configuration
 
@@ -309,6 +354,32 @@ proxy. The rollout logic lives in
 
 The VPS keeps its own `.env` (application secrets such as `POSTGRES_PASSWORD`
 and `OPENAI_API_KEY`); those values are never stored in this repository.
+
+### Production runbook
+
+1. **Approve:** after the `Release Image` run succeeds, open the pending
+   `Deploy Production` run (or `workflow_dispatch` it with an explicit
+   `image_tag`, e.g. `sha-<full-sha>`) and approve the `production` environment.
+   A missing `SSH_HOST` now **fails** the job instead of silently skipping.
+2. **Rollout:** the remote script resolves and pins the image **by digest**,
+   rejects a `localhost` `DATABASE_URL`/`REDIS_URL`, starts the backing services,
+   takes a **mandatory** `pg_dump` backup (the deploy aborts if it fails) and
+   optionally copies it off-host via `BACKUP_SYNC_CMD`, pulls Ollama models when
+   enabled, applies migrations **once**, then starts `api`/`worker` and waits for
+   `/health`.
+3. **Verify:** `curl -fsS http://127.0.0.1:8000/health` should return
+   `"status":"healthy"` with the expected `version`/`environment`, and
+   `.deployed_image_tag` should match the deployed tag.
+4. **Roll back:** if `/health` never turns healthy, the script redeploys the
+   previous tag — but only when that image can resolve the current database
+   revision; otherwise it refuses and asks for manual intervention. Schema
+   migrations are **not** reverted — design them as expand/contract.
+5. **First deploy:** there is no previous tag, so automatic rollback is
+   unavailable and the script logs this explicitly; be ready to intervene.
+
+For a complete step-by-step walkthrough (VPS bootstrap, SSH keys, server-side
+`.env`, environment secrets, reverse proxy, verification, rollback and restore),
+see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
 ### Local commands
 
@@ -324,15 +395,21 @@ make cov       # pytest with coverage report
 ```text
 docmind/
 ├── .github/
+│   ├── actions/prepare-python/      # Composite action: Python + dev dependencies
+│   ├── CODEOWNERS                   # Review ownership
 │   ├── dependabot.yml               # Weekly pip / actions / docker updates
 │   ├── deploy/remote-deploy.sh      # VPS rollout + rollback logic
 │   └── workflows/                   # ci · security · dependency-review · release-image · deploy
+├── deploy/
+│   └── nginx/docmind.conf.example   # SSE-aware reverse-proxy sample
+├── docs/
+│   └── DEPLOYMENT.md                # Zero-to-production deployment guide
 ├── alembic/
 │   ├── env.py                       # Async Alembic environment
 │   └── versions/0001_initial.py     # vector extension + HNSW index
 ├── alembic.ini
 ├── docker-compose.yml               # db · redis · api · worker · ollama · demo
-├── docker-compose.prod.yml          # Hardened production stack
+├── docker-compose.prod.yml          # Hardened production stack (Ollama behind --profile ollama)
 ├── Dockerfile                       # Multi-stage, non-root runtime
 ├── Makefile                         # Local task runner (mirrors CI)
 ├── .pre-commit-config.yaml          # Ruff, mypy, gitleaks, whitespace hooks
@@ -341,16 +418,20 @@ docmind/
 ├── demo/
 │   └── app_ui.py                    # Streamlit demo client
 ├── src/
-│   ├── main.py                      # App factory, lifespan, /health, request-id
+│   ├── main.py                      # App factory, lifespan, /health, /metrics, request-id
 │   ├── config.py                    # Pydantic v2 settings + validators
 │   ├── logging_config.py            # JSON / console structured logging
-│   ├── api/v1/
-│   │   ├── router.py                # Aggregates v1 routers
-│   │   ├── documents.py             # Upload, list, status, delete
-│   │   └── chat.py                  # SSE-streamed grounded answers
+│   ├── metrics.py                   # Prometheus counters/gauges
+│   ├── api/
+│   │   ├── deps.py                  # API-key auth + rate limiting
+│   │   └── v1/
+│   │       ├── router.py            # Aggregates v1 routers
+│   │       ├── documents.py         # Upload, paginated list, status, delete
+│   │       └── chat.py              # SSE-streamed grounded answers
 │   ├── db/
 │   │   ├── base.py                  # Async engine, session factory, deps
-│   │   └── models.py                # Document, DocumentChunk (pgvector)
+│   │   ├── models.py                # Document, DocumentChunk (pgvector)
+│   │   └── schema_guard.py          # Startup embedding-dimension guard
 │   ├── schemas/                     # Pydantic request/response + SSE types
 │   ├── services/
 │   │   ├── rag_engine.py            # Provider-agnostic LLM + embeddings
@@ -365,7 +446,10 @@ docmind/
     ├── test_api.py
     ├── test_chat_sse.py
     ├── test_chunker.py
+    ├── test_integration_db.py     # Real PostgreSQL+pgvector (skipped without a DB)
     ├── test_parser.py
+    ├── test_security.py           # API-key auth + rate limiter
+    ├── test_upload_limits.py
     └── test_vector_store.py
 ```
 
@@ -376,10 +460,24 @@ docmind/
 | `/health` returns `degraded` | Postgres or Redis unreachable | `docker compose ps`, then check logs |
 | Uploads stuck in `processing` | Worker not running / can't reach Redis | Ensure the `worker` service is up |
 | `415 Unsupported Media Type` | Extension not allow-listed | Allowed: `txt`, `md`, `csv`, `json`, `pdf` |
-| pgvector dimension error | `EMBEDDING_DIM` ≠ model output | Align the value, re-run migrations, re-index |
-| API exits immediately | Missing DB password or provider key | Set `POSTGRES_PASSWORD` / `OPENAI_API_KEY` in `.env` |
+| API/worker refuses to start: `Embedding dimension mismatch` | `document_chunks.embedding` width ≠ configured `EMBEDDING_DIM` | Align `EMBEDDING_DIM` with the model, regenerate the migration and re-index ([`src/db/schema_guard.py`](src/db/schema_guard.py)) |
+| Deploy aborts with `database backup failed` | `pg_dump` failed inside the `db` container | Fix DB access; the backup is mandatory before migrations |
+| Ollama services absent in production | No provider is `ollama`, so the profile stays off | Set `EMBEDDING_PROVIDER`/`LLM_PROVIDER=ollama` and run with `--profile ollama` |
+| Deploy job fails: `SSH_HOST is not configured` | Missing `production` environment secrets | Add `SSH_HOST`, `SSH_USER`, `SSH_KEY` and `DEPLOY_PATH` |
+| `401 Unauthorized` on `/api/v1/*` | `API_KEY` is set and the header is missing/wrong | Send `X-API-Key` (or adjust `API_KEY_HEADER`) |
+| `429 Too Many Requests` | Per-client rate limit exceeded | Back off, or tune `*_RATE_LIMIT_REQUESTS`/`RATE_LIMIT_ENABLED` |
+| Deploy aborts: `DATABASE_URL points at localhost` | A local `.env` copied to the server | Remove `DATABASE_URL`/`REDIS_URL` so the Compose hosts are used |
+| Rollback refused: `schema revision ... is unknown` | Previous image predates the applied migration | Restore the pre-deploy backup or roll forward manually |
+| API exits immediately | Missing DB password, provider key or `API_KEY` (production) | Set the required variables in `.env` |
 
 ## Security
+
+The API enforces API-key authentication on every `/api/v1/*` route, applies
+per-client rate limits to the expensive upload/chat endpoints, streams opaque
+error payloads correlated by `X-Request-ID`, and disables the OpenAPI/Swagger
+surfaces in production. The production stack additionally publishes no database
+or Redis ports, requires a Redis password, drops container capabilities and pins
+images by digest.
 
 Please report vulnerabilities privately through GitHub's **Private
 Vulnerability Reporting** (Security tab → **Report a vulnerability**) — never in

@@ -1,10 +1,14 @@
 # Production stack for the VPS. Standalone (not an overlay) so there is no
 # ambiguity about which ports/databases are exposed in production.
 #
-#   DOCMIND_IMAGE=ghcr.io/karltkiy/docmind IMAGE_TAG=sha-<sha> \
+#   DOCMIND_IMAGE_REF=ghcr.io/owner/docmind@sha256:<digest> \
 #     docker compose -f docker-compose.prod.yml up -d --no-build
 #
-# Deployed by .github/workflows/deploy.yml. Secrets live in a server-side .env.
+# Images are referenced by an immutable digest (``repo@sha256:...``) supplied by
+# .github/deploy/remote-deploy.sh, which pulls and resolves it. Migrations are
+# NOT run here: the rollout applies them once, explicitly, before switching
+# traffic (see the deploy script) so a container restart can never mutate the
+# schema. Secrets live in a server-side .env.
 name: docmind-prod
 
 x-logging: &default-logging
@@ -13,17 +17,45 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "3"
 
+# no-new-privileges everywhere; drop every capability for our own images.
+x-hardening-strict: &hardening-strict
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+x-hardening-basic: &hardening-basic
+  security_opt:
+    - no-new-privileges:true
+
 x-app-env: &app-env
   POSTGRES_HOST: db
   REDIS_HOST: redis
   OLLAMA_BASE_URL: http://ollama:11434
   UPLOAD_DIR: /data/uploads
   LOG_JSON: "True"
+  # Production posture: docs off, auth on, explicit CORS. The API refuses to
+  # boot without API_KEY (see src/config.py).
+  ENVIRONMENT: production
+  API_KEY: ${API_KEY:?set API_KEY in the server-side .env}
+  ENABLE_DOCS: ${ENABLE_DOCS:-False}
+  METRICS_ENABLED: ${METRICS_ENABLED:-True}
+  # EMBEDDING_DIM is mandatory: it must match BOTH the embedding model and the
+  # Alembic migration, otherwise pgvector rejects every insert (checked at
+  # startup by src/db/schema_guard.py).
+  EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+  LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+  EMBEDDING_DIM: ${EMBEDDING_DIM:?set EMBEDDING_DIM in the server-side .env}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+  LLM_MODEL: ${LLM_MODEL:-}
+  # Never fall back to "*" in production: require an explicit origin allow-list.
+  CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS in the server-side .env}
 
 services:
   db:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
+    <<: *hardening-basic
     env_file:
       - .env
     environment:
@@ -48,11 +80,18 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    <<: *hardening-strict
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in the server-side .env}
+      # Lets the healthcheck's redis-cli authenticate without leaking the
+      # password into the container's argv.
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?set REDIS_PASSWORD in the server-side .env}
+    command: >
+      sh -c 'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"'
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 3s
       retries: 10
@@ -64,8 +103,10 @@ services:
           memory: 512m
 
   api:
-    image: ${DOCMIND_IMAGE:?set DOCMIND_IMAGE}:${IMAGE_TAG:-latest}
+    # Digest-pinned by the rollout; tags are only used to pull.
+    image: ${DOCMIND_IMAGE_REF:?set DOCMIND_IMAGE_REF to repo@sha256:<digest>}
     restart: unless-stopped
+    <<: *hardening-strict
     env_file:
       - .env
     environment:
@@ -76,16 +117,22 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - uploads:/data/uploads
+    read_only: true
+    tmpfs:
+      - /tmp
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
       ollama:
+        # Ollama runs only under the opt-in "ollama" profile, so a cloud-only
+        # deployment must not block on a service that will never start.
         condition: service_started
-    command: >
-      sh -c "alembic upgrade head &&
-             uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 2"
+        required: false
+    # Migrations run once in the rollout, not on every container start, so a
+    # restart can never mutate the schema.
+    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 15s
@@ -100,8 +147,9 @@ services:
           memory: 2g
 
   worker:
-    image: ${DOCMIND_IMAGE:?set DOCMIND_IMAGE}:${IMAGE_TAG:-latest}
+    image: ${DOCMIND_IMAGE_REF:?set DOCMIND_IMAGE_REF to repo@sha256:<digest>}
     restart: unless-stopped
+    <<: *hardening-strict
     env_file:
       - .env
     environment:
@@ -109,6 +157,9 @@ services:
       DEBUG: "False"
     volumes:
       - uploads:/data/uploads
+    read_only: true
+    tmpfs:
+      - /tmp
     depends_on:
       db:
         condition: service_healthy
@@ -116,11 +167,22 @@ services:
         condition: service_healthy
       ollama:
         condition: service_started
-    command: arq src.worker.tasks.WorkerSettings
-    # The image-level HEALTHCHECK targets the API surface; the Arq worker has no
-    # HTTP endpoint, so the inherited probe is disabled for this service.
+        required: false
+    command: ["arq", "src.worker.tasks.WorkerSettings"]
+    # The Arq worker has no HTTP server, so liveness is derived from the
+    # process command line (no procps dependency needed).
     healthcheck:
-      disable: true
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import pathlib, sys; sys.exit(0 if b'arq' in pathlib.Path('/proc/1/cmdline').read_bytes() else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     logging: *default-logging
     deploy:
       resources:
@@ -129,8 +191,12 @@ services:
           memory: 2g
 
   ollama:
+    # Opt-in only: `docker compose --profile ollama ...`. Cloud-only (OpenAI)
+    # deployments never pay for this heavy, GPU-hungry service.
+    profiles: ["ollama"]
     image: ollama/ollama:latest
     restart: unless-stopped
+    <<: *hardening-basic
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
@@ -147,6 +213,7 @@ services:
           memory: 8g
 
   ollama-init:
+    profiles: ["ollama"]
     image: ollama/ollama:latest
     restart: "no"
     environment:
@@ -159,6 +226,11 @@ services:
       "ollama pull ${EMBEDDING_MODEL:-nomic-embed-text} &&
        ollama pull ${LLM_MODEL:-llama3.1:8b}"
     logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2g
 
 volumes:
   pg_data:

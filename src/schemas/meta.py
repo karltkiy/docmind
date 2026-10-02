@@ -12,7 +12,8 @@ class RootResponse(BaseModel):
 
     name: str
     version: str
-    docs: str
+    # ``None`` when the OpenAPI/Swagger surfaces are disabled (production).
+    docs: str | None = None
 
 
 class HealthResponse(BaseModel):
@@ -21,3 +22,6 @@ class HealthResponse(BaseModel):
     status: Literal["healthy", "degraded"]
     database: bool
     redis: bool
+    version: str
+    environment: str
+    provider_ready: bool
