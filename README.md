@@ -272,9 +272,11 @@ image, and an approved deploy rolls out to the VPS with automatic rollback.
 ```mermaid
 flowchart LR
     PR["Pull Request"] --> CI["CI: Ruff, mypy, pytest + coverage"]
-    PR --> SEC["Security: CodeQL, pip-audit, Trivy, gitleaks"]
+    PR --> SEC["Security: CodeQL, pip-audit, gitleaks, Trivy"]
+    PR --> DEP["Dependency Review: new HIGH/CRITICAL"]
     CI --> MERGE["Merge to main"]
     SEC --> MERGE
+    DEP --> MERGE
     MERGE --> IMG["Build + scan image"]
     IMG --> GHCR["Push to ghcr.io (SBOM + provenance)"]
     GHCR --> GATE["Approve production environment"]
@@ -285,7 +287,8 @@ flowchart LR
 | Workflow | Trigger | Purpose |
 | --- | --- | --- |
 | [`ci.yml`](.github/workflows/ci.yml) | PR / push to `main` | Ruff, mypy, pytest with a 70% coverage gate |
-| [`security.yml`](.github/workflows/security.yml) | PR / push / weekly | CodeQL, pip-audit, Dependency Review, gitleaks, Trivy FS |
+| [`security.yml`](.github/workflows/security.yml) | PR / push / weekly | CodeQL, pip-audit, gitleaks, Trivy FS |
+| [`dependency-review.yml`](.github/workflows/dependency-review.yml) | PR to `main` | Fails when a new dependency has a HIGH/CRITICAL advisory |
 | [`release-image.yml`](.github/workflows/release-image.yml) | push to `main` / tags | Build, Trivy-scan, push to GHCR with SBOM + provenance |
 | [`deploy.yml`](.github/workflows/deploy.yml) | after release / manual | Gated SSH rollout to the VPS with health verify + rollback |
 
@@ -323,7 +326,7 @@ docmind/
 ├── .github/
 │   ├── dependabot.yml               # Weekly pip / actions / docker updates
 │   ├── deploy/remote-deploy.sh      # VPS rollout + rollback logic
-│   └── workflows/                   # ci · security · release-image · deploy
+│   └── workflows/                   # ci · security · dependency-review · release-image · deploy
 ├── alembic/
 │   ├── env.py                       # Async Alembic environment
 │   └── versions/0001_initial.py     # vector extension + HNSW index

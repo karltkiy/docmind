@@ -135,9 +135,13 @@ If in doubt, contact us privately first via the channel above.
 DocMind already ships a number of controls that this policy builds upon:
 
 - **Continuous scanning** in [`.github/workflows/security.yml`](.github/workflows/security.yml):
-  CodeQL (`security-and-quality`), `pip-audit`, Dependency Review
-  (`fail-on-severity: high`), gitleaks secret scanning, and Trivy filesystem
-  scanning for `HIGH`/`CRITICAL` vulnerabilities and misconfigurations.
+  CodeQL (`security-and-quality`), `pip-audit`, gitleaks secret scanning, and
+  Trivy filesystem scanning for `HIGH`/`CRITICAL` vulnerabilities and
+  misconfigurations.
+- **Pull-request dependency review** in
+  [`.github/workflows/dependency-review.yml`](.github/workflows/dependency-review.yml):
+  fails a PR when a newly introduced dependency carries a `HIGH`/`CRITICAL`
+  advisory.
 - **Weekly deep scans** (scheduled run) to catch newly disclosed advisories.
 - **Automated dependency updates** via [`.github/dependabot.yml`](.github/dependabot.yml)
   for Python packages, GitHub Actions, and Docker images.
