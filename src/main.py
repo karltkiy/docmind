@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request, Response, status
+from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
@@ -16,7 +16,9 @@ from sqlalchemy import text
 from .api.v1.router import api_router
 from .config import settings
 from .db.base import dispose_engine, engine
+from .db.schema_guard import verify_embedding_dimension
 from .logging_config import configure_logging
+from .metrics import APP_INFO, READY, MetricsMiddleware, render_metrics
 from .schemas.meta import HealthResponse, RootResponse
 from .services.rag_engine import rag_engine
 from .worker.queue import close_redis_pool, get_redis_pool
@@ -33,11 +35,22 @@ _REQUEST_ID_HEADER = "X-Request-ID"
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Initialise shared resources on startup and release them on shutdown."""
     Path(settings.UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
+    # Fail fast on a schema/provider dimension mismatch instead of surfacing an
+    # opaque pgvector error on the first upload.
+    await verify_embedding_dimension(engine)
     await rag_engine.startup()
-    logger.info("DocMind API started (debug=%s).", settings.DEBUG)
+    APP_INFO.labels(
+        version=_APP_VERSION,
+        environment=settings.ENVIRONMENT,
+        embedding_provider=settings.EMBEDDING_PROVIDER,
+        llm_provider=settings.LLM_PROVIDER,
+    ).set(1)
+    READY.set(1)
+    logger.info("DocMind API started (env=%s, debug=%s).", settings.ENVIRONMENT, settings.DEBUG)
     try:
         yield
     finally:
+        READY.set(0)
         await rag_engine.shutdown()
         await close_redis_pool()
         await dispose_engine()
@@ -49,6 +62,11 @@ app = FastAPI(
     description="Enterprise RAG microservice",
     version=_APP_VERSION,
     lifespan=lifespan,
+    # OpenAPI/Swagger surfaces are disabled in production unless explicitly
+    # enabled, so the schema is not advertised to anonymous callers.
+    docs_url="/docs" if settings.docs_enabled else None,
+    redoc_url="/redoc" if settings.docs_enabled else None,
+    openapi_url="/openapi.json" if settings.docs_enabled else None,
 )
 
 _allow_all_origins = settings.cors_origins == ["*"]
@@ -59,6 +77,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Added last so it is the outermost middleware and observes every request.
+# Pure ASGI: it never wraps the response body, which keeps SSE unbuffered.
+app.add_middleware(MetricsMiddleware)
 
 
 @app.middleware("http")
@@ -96,7 +117,11 @@ app.include_router(api_router, prefix="/api/v1")
 )
 async def root() -> RootResponse:
     """Return basic service identity."""
-    return RootResponse(name=settings.APP_NAME, version=_APP_VERSION, docs="/docs")
+    return RootResponse(
+        name=settings.APP_NAME,
+        version=_APP_VERSION,
+        docs="/docs" if settings.docs_enabled else None,
+    )
 
 
 @app.get(
@@ -134,4 +159,22 @@ async def health_check(response: Response) -> HealthResponse:
         status="healthy" if healthy else "degraded",
         database=database_ok,
         redis=redis_ok,
+        version=_APP_VERSION,
+        environment=settings.ENVIRONMENT,
+        provider_ready=rag_engine.ready,
     )
+
+
+@app.get(
+    "/metrics",
+    tags=["meta"],
+    include_in_schema=False,
+    summary="Prometheus metrics",
+    description="Expose Prometheus metrics for scraping.",
+)
+async def metrics_endpoint() -> Response:
+    """Expose Prometheus metrics when enabled."""
+    if not settings.METRICS_ENABLED:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Metrics are disabled.")
+    payload, content_type = render_metrics()
+    return Response(content=payload, media_type=content_type)

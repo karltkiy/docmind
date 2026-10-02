@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +22,30 @@ from ...services.parser import (
 )
 from ...worker.queue import get_redis_pool
 from ...worker.tasks import process_document_task
+from ..deps import enforce_upload_rate_limit
+
+# Slack for multipart boundaries/headers when comparing Content-Length to the cap.
+_MULTIPART_OVERHEAD_BYTES = 64 * 1024
+_READ_CHUNK_BYTES = 1024 * 1024
+
+
+async def _read_capped(file: UploadFile, limit: int) -> bytes:
+    """Read an upload without ever buffering more than ``limit`` bytes."""
+    chunks: list[bytes] = []
+    size = 0
+    while True:
+        chunk = await file.read(_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        size += len(chunk)
+        if size > limit:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=f"File exceeds the {settings.MAX_UPLOAD_MB} MB limit.",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +80,7 @@ def _to_response(document: Document, chunk_count: int = 0) -> DocumentResponse:
     "/upload",
     response_model=DocumentResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(enforce_upload_rate_limit)],
     summary="Upload a document",
     description=(
         "Persist an uploaded document to shared storage and enqueue background "
@@ -70,6 +95,7 @@ def _to_response(document: Document, chunk_count: int = 0) -> DocumentResponse:
     },
 )
 async def upload_document(
+    http_request: Request,
     file: Annotated[UploadFile, File(description="Document to ingest (.txt/.md/.csv/.json/.pdf).")],
     db: DbSession,
 ) -> DocumentResponse:
@@ -82,15 +108,21 @@ async def upload_document(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc)
         ) from exc
 
-    content = await file.read()
+    max_bytes = settings.max_upload_bytes
+    # Reject oversized bodies before reading them into memory when the client
+    # declares a Content-Length.
+    declared = http_request.headers.get("content-length")
+    if declared is not None and declared.isdigit():
+        if int(declared) > max_bytes + _MULTIPART_OVERHEAD_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=f"File exceeds the {settings.MAX_UPLOAD_MB} MB limit.",
+            )
+
+    content = await _read_capped(file, max_bytes)
     if not content:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty."
-        )
-    if len(content) > settings.max_upload_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File exceeds the {settings.MAX_UPLOAD_MB} MB limit.",
         )
 
     upload_dir = Path(settings.UPLOAD_DIR)
@@ -116,6 +148,8 @@ async def upload_document(
         await pool.enqueue_job(process_document_task.__name__, str(document.id))
     except Exception as exc:
         logger.exception("Failed to enqueue document %s", document.id)
+        # Do not leave an orphaned file behind when the job was never queued.
+        stored_path.unlink(missing_ok=True)
         document.status = DocumentStatus.FAILED
         document.error = "Failed to enqueue background processing job."
         await db.commit()
@@ -131,13 +165,23 @@ async def upload_document(
     "",
     response_model=list[DocumentResponse],
     summary="List documents",
-    description="List every stored document, newest first, with chunk counts.",
+    description="List stored documents, newest first, with chunk counts.",
 )
-async def list_documents(db: DbSession) -> list[DocumentResponse]:
-    """List all documents, newest first."""
-    result = await db.execute(select(Document).order_by(Document.created_at.desc()))
-    documents = result.scalars().all()
-    return [_to_response(document, await _chunk_count(db, document.id)) for document in documents]
+async def list_documents(
+    db: DbSession,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[DocumentResponse]:
+    """List documents, newest first, in a single aggregated query."""
+    result = await db.execute(
+        select(Document, func.count(DocumentChunk.id))
+        .outerjoin(DocumentChunk, DocumentChunk.document_id == Document.id)
+        .group_by(Document.id)
+        .order_by(Document.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    return [_to_response(document, int(count)) for document, count in result.all()]
 
 
 @router.get(

@@ -15,9 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...db.base import get_session_factory
 from ...db.models import Document
+from ...metrics import CHAT_STREAMS
 from ...schemas.chat import ChatRequest, ChatSource, SsePayload
 from ...services.rag_engine import rag_engine
 from ...services.vector_store import SearchResult, VectorStore
+from ..deps import enforce_chat_rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +81,7 @@ def _serialize_sources(
         "answer as Server-Sent Events. Frames are one of `sources`, `token`, "
         "`done`, or `error`."
     ),
+    dependencies=[Depends(enforce_chat_rate_limit)],
     response_class=StreamingResponse,
     responses={
         200: {
@@ -130,9 +133,11 @@ async def chat_completion(
                 yield _sse({"type": "token", "content": token})
 
             yield _sse({"type": "done"})
+            CHAT_STREAMS.labels("success").inc()
         except Exception:
             # Never leak internal exception details to the client; correlate the
             # opaque message with the server-side traceback via ``request_id``.
+            CHAT_STREAMS.labels("error").inc()
             logger.exception("Chat completion failed (request_id=%s)", request_id)
             yield _sse(
                 {

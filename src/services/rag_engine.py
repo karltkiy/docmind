@@ -78,6 +78,15 @@ class RAGEngine:
             )
             logger.debug("Initialised shared OpenAI client.")
 
+    @property
+    def ready(self) -> bool:
+        """Whether the transport clients required by the active providers exist."""
+        if self._uses_openai and self._openai is None:
+            return False
+        if "ollama" in {self.embedding_provider, self.llm_provider} and self._http is None:
+            return False
+        return True
+
     async def shutdown(self) -> None:
         """Release every transport client owned by the engine."""
         if self._http is not None:

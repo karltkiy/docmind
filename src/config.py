@@ -17,11 +17,13 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import quote
 
 from pydantic import computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Provider = Literal["openai", "ollama"]
+Environment = Literal["development", "staging", "production"]
 
 _DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
     "openai": "text-embedding-3-small",
@@ -49,11 +51,26 @@ class Settings(BaseSettings):
 
     # Application
     APP_NAME: str = "DocMind API"
+    ENVIRONMENT: Environment = "development"
+    # ``None`` derives the value from the environment: docs are enabled outside
+    # production and disabled in production unless explicitly overridden.
+    ENABLE_DOCS: bool | None = None
     DEBUG: bool = False
-    PORT: int = 8000
     LOG_LEVEL: str = "INFO"
     LOG_JSON: bool = True
     CORS_ORIGINS: str = "*"
+    METRICS_ENABLED: bool = True
+
+    # Security
+    # When set, every /api/v1/* route requires this value in ``API_KEY_HEADER``.
+    # Mandatory in production so the API is never deployed wide open.
+    API_KEY: str | None = None
+    API_KEY_HEADER: str = "X-API-Key"
+    # Requests allowed per window, per client, for the expensive routes.
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_WINDOW_SECONDS: int = 60
+    UPLOAD_RATE_LIMIT_REQUESTS: int = 10
+    CHAT_RATE_LIMIT_REQUESTS: int = 30
 
     # PostgreSQL
     POSTGRES_USER: str = "postgres"
@@ -70,6 +87,7 @@ class Settings(BaseSettings):
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
+    REDIS_PASSWORD: str | None = None
     REDIS_URL: str | None = None
 
     # RAG providers
@@ -98,6 +116,30 @@ class Settings(BaseSettings):
         """Require either an explicit URL or a password — never a hidden default."""
         if not self.DATABASE_URL and not self.POSTGRES_PASSWORD:
             raise ValueError("Database is not configured: set DATABASE_URL or POSTGRES_PASSWORD.")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_rate_limits(self) -> Settings:
+        """Guard the rate-limit configuration against nonsensical values."""
+        if self.RATE_LIMIT_WINDOW_SECONDS <= 0:
+            raise ValueError("RATE_LIMIT_WINDOW_SECONDS must be positive.")
+        if self.UPLOAD_RATE_LIMIT_REQUESTS <= 0 or self.CHAT_RATE_LIMIT_REQUESTS <= 0:
+            raise ValueError("Rate-limit request budgets must be positive.")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_production_posture(self) -> Settings:
+        """Refuse to boot an insecure production configuration."""
+        if self.is_production:
+            if not self.API_KEY:
+                raise ValueError(
+                    "API_KEY is required in production: the HTTP API must not be "
+                    "exposed without authentication."
+                )
+            if self.cors_origins == ["*"]:
+                raise ValueError(
+                    "CORS_ORIGINS must be an explicit allow-list in production (never '*')."
+                )
         return self
 
     @model_validator(mode="after")
@@ -131,6 +173,18 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Derived / convenience accessors
     # ------------------------------------------------------------------
+    @property
+    def is_production(self) -> bool:
+        """Whether the service is running under the production environment."""
+        return self.ENVIRONMENT == "production"
+
+    @property
+    def docs_enabled(self) -> bool:
+        """Whether OpenAPI/Swagger surfaces are exposed."""
+        if self.ENABLE_DOCS is not None:
+            return self.ENABLE_DOCS
+        return not self.is_production
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url(self) -> str:
@@ -149,7 +203,8 @@ class Settings(BaseSettings):
         """Redis DSN understood by arq and redis-py."""
         if self.REDIS_URL:
             return self.REDIS_URL
-        return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+        auth = f":{quote(self.REDIS_PASSWORD, safe='')}@" if self.REDIS_PASSWORD else ""
+        return f"redis://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 
     @property
     def embedding_model(self) -> str:

@@ -49,6 +49,10 @@ jobs:
             type=sha,format=long
             type=raw,value=latest,enable={{is_default_branch}}
 
+      # Two passes are deliberate: the image is built and scanned locally first,
+      # and only pushed once it is clean. Pushing first and scanning the registry
+      # digest would publish a vulnerable image before the gate. The second pass
+      # is warm from the shared GHA cache, so it is cheap.
       - name: Build image locally for scanning
         uses: docker/build-push-action@v7
         with:

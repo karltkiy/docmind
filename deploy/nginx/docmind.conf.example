@@ -1,0 +1,62 @@
+# ---------------------------------------------------------------------------
+# Example reverse proxy for DocMind in production.
+#
+# The production Compose stack binds the API to 127.0.0.1:8000 only, so TLS and
+# the public hostname are terminated here. Copy to e.g.
+# /etc/nginx/sites-available/docmind and adjust server_name / certificate paths.
+#
+# Critical for the chat endpoint: `proxy_buffering off` (and the timeouts below)
+# so `POST /api/v1/chat/completions` streams SSE tokens incrementally instead of
+# delivering them in one buffered burst.
+# ---------------------------------------------------------------------------
+
+upstream docmind_api {
+    server 127.0.0.1:8000;
+    keepalive 16;
+}
+
+server {
+    listen 80;
+    server_name docmind.example.com;
+    # Redirect all plaintext traffic to HTTPS.
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name docmind.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/docmind.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/docmind.example.com/privkey.pem;
+
+    client_max_body_size 30m;  # keep slightly above MAX_UPLOAD_MB
+
+    location / {
+        proxy_pass http://docmind_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+    }
+
+    # Token-streamed answers (Server-Sent Events): disable buffering and allow
+    # long-lived responses.
+    location /api/v1/chat/completions {
+        proxy_pass http://docmind_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+
+        proxy_buffering off;
+        proxy_cache off;
+        chunked_transfer_encoding on;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+}

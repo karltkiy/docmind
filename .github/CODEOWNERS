@@ -1,0 +1,14 @@
+# Default owners for everything in the repository.
+* @karltkiy
+
+# Deployment, CI/CD and container configuration require extra scrutiny.
+/.github/ @karltkiy
+/docker-compose.prod.yml @karltkiy
+/Dockerfile @karltkiy
+/pyproject.toml @karltkiy
+
+# Security-sensitive code.
+/src/config.py @karltkiy
+/src/api/deps.py @karltkiy
+/src/db/schema_guard.py @karltkiy
+/SECURITY.md @karltkiy

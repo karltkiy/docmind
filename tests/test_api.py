@@ -21,7 +21,17 @@ async def test_health_endpoint_reports_dependencies() -> None:
         response = await client.get("/health")
     assert response.status_code in (200, 503)
     body = response.json()
-    assert set(body) == {"status", "database", "redis"}
+    assert set(body) == {
+        "status",
+        "database",
+        "redis",
+        "version",
+        "environment",
+        "provider_ready",
+    }
+    assert body["status"] in {"healthy", "degraded"}
+    assert body["environment"] == "development"
+    assert isinstance(body["provider_ready"], bool)
 
 
 def test_openapi_paths_are_registered() -> None:

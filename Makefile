@@ -7,7 +7,8 @@ PIP ?= $(PY) -m pip
 COMPOSE ?= docker compose
 IMAGE ?= ghcr.io/karltkiy/docmind
 TAG ?= local
-COV_FAIL_UNDER ?= 70
+# Mirrors the gate enforced in .github/workflows/ci.yml.
+COV_FAIL_UNDER ?= 60
 
 .DEFAULT_GOAL := help
 

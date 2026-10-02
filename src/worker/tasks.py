@@ -7,12 +7,15 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from arq import cron
 from sqlalchemy import delete, select, update
 
 from ..config import settings
-from ..db.base import SessionLocal, dispose_engine
+from ..db.base import SessionLocal, dispose_engine, engine
 from ..db.models import Document, DocumentChunk, DocumentStatus
+from ..db.schema_guard import verify_embedding_dimension
 from ..logging_config import configure_logging
+from ..metrics import INGESTION_JOBS
 from ..services.chunker import TextChunker
 from ..services.parser import extract_text
 from ..services.rag_engine import rag_engine
@@ -81,11 +84,13 @@ async def process_document_task(ctx: dict[str, Any], document_id: str) -> dict[s
                 .values(status=DocumentStatus.COMPLETED, error=None)
             )
             await session.commit()
+            INGESTION_JOBS.labels("success").inc()
             logger.info("Finished document %s with %d chunks.", doc_uuid, len(chunk_texts))
             return {"document_id": str(doc_uuid), "chunks": len(chunk_texts)}
 
         except Exception as exc:  # noqa: BLE001 - persist failure details
             await session.rollback()
+            INGESTION_JOBS.labels("failure").inc()
             logger.exception("Processing failed for document %s", doc_uuid)
             await session.execute(
                 update(Document)
@@ -96,8 +101,38 @@ async def process_document_task(ctx: dict[str, Any], document_id: str) -> dict[s
             raise
 
 
+async def cleanup_orphaned_files(ctx: dict[str, Any]) -> dict[str, int]:
+    """Delete stored uploads that no longer have a matching document row."""
+    upload_dir = Path(settings.UPLOAD_DIR)
+    if not upload_dir.exists():
+        return {"removed": 0}
+
+    async with SessionLocal() as session:
+        known = {
+            path
+            for path in (await session.execute(select(Document.file_path))).scalars().all()
+            if path
+        }
+
+    removed = 0
+    for candidate in upload_dir.iterdir():
+        if not candidate.is_file() or str(candidate) in known:
+            continue
+        try:
+            candidate.unlink()
+            removed += 1
+        except OSError:
+            logger.warning("Could not remove orphaned file %s", candidate)
+    if removed:
+        logger.info("Removed %d orphaned upload(s).", removed)
+    return {"removed": removed}
+
+
 async def on_startup(ctx: dict[str, Any]) -> None:
     """Initialise shared resources for the worker process."""
+    # The worker is the component that writes vectors; refuse to start against a
+    # schema whose width does not match the configured embedding model.
+    await verify_embedding_dimension(engine)
     await rag_engine.startup()
     logger.info("Arq worker started.")
 
@@ -113,6 +148,7 @@ class WorkerSettings:
     """Arq worker configuration."""
 
     functions = [process_document_task]
+    cron_jobs = [cron(cleanup_orphaned_files, hour=3, minute=0)]
     on_startup = on_startup
     on_shutdown = on_shutdown
     redis_settings = build_redis_settings()

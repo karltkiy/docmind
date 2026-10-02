@@ -14,10 +14,6 @@ on:
         description: "Image tag to deploy (e.g. sha-<full-sha> or a semver tag)"
         required: true
         type: string
-      image_digest:
-        description: "Optional sha256 digest to verify after rollout"
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -64,11 +60,19 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "Resolved image tag: ${tag}"
 
-      - name: Skip deployment notification
+      - name: Fail when the VPS is not configured
         if: ${{ env.HAS_SSH_HOST != 'true' }}
         run: |
-          echo "⚠️ SSH_HOST secret is missing. Skipping VPS deployment." >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::SSH_HOST is not configured for the 'production' environment. Set the deployment secrets before running this workflow."
+          exit 1
       
+      - name: Resolve lowercase image reference
+        id: registry
+        run: |
+          # GHCR paths must be lowercase; `github.repository` preserves the
+          # owner/repo casing and would break `docker pull` otherwise.
+          echo "image=$(printf '%s' 'ghcr.io/${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
       - name: Copy deployment assets to the server
         if: ${{ env.HAS_SSH_HOST == 'true' }}
         uses: appleboy/scp-action@v1.0.0
@@ -89,16 +93,15 @@ jobs:
         env:
           GHCR_USER: ${{ secrets.GHCR_USER }}
           GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
-          DOCMIND_IMAGE: ghcr.io/${{ github.repository }}
+          DOCMIND_IMAGE: ${{ steps.registry.outputs.image }}
           IMAGE_TAG: ${{ steps.image.outputs.tag }}
-          IMAGE_DIGEST: ${{ inputs.image_digest }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
-          envs: GHCR_USER,GHCR_TOKEN,DOCMIND_IMAGE,IMAGE_TAG,IMAGE_DIGEST,DEPLOY_PATH
+          envs: GHCR_USER,GHCR_TOKEN,DOCMIND_IMAGE,IMAGE_TAG,DEPLOY_PATH
           command_timeout: 30m
           script: |
             set -euo pipefail
@@ -111,6 +114,6 @@ jobs:
           {
             echo "### Production deployment"
             echo ""
-            echo "- **Image:** \`ghcr.io/${{ github.repository }}:${{ steps.image.outputs.tag }}\`"
+            echo "- **Image:** \`${{ steps.registry.outputs.image }}:${{ steps.image.outputs.tag }}\`"
             echo "- **Result:** ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"
