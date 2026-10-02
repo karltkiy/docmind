@@ -141,10 +141,10 @@ DocMind already ships a number of controls that this policy builds upon:
 - **Weekly deep scans** (scheduled run) to catch newly disclosed advisories.
 - **Automated dependency updates** via [`.github/dependabot.yml`](.github/dependabot.yml)
   for Python packages, GitHub Actions, and Docker images.
-- **Hardened runtime**: multi-stage, non-root container image
-  ([`Dockerfile`](Dockerfile)) and a production Compose stack that publishes no
-  database or Redis ports and binds only the API to `127.0.0.1`
-  ([`docker-compose.prod.yml`](docker-compose.prod.yml)).
+- **Hardened runtime**: multi-stage, non-root container image with an
+  image-level `HEALTHCHECK` ([`Dockerfile`](Dockerfile)) and a production
+  Compose stack that publishes no database or Redis ports and binds only the API
+  to `127.0.0.1` ([`docker-compose.prod.yml`](docker-compose.prod.yml)).
 - **Fail-fast, no-default secrets**: the app refuses to start without required
   credentials and keeps no in-code fallbacks ([`src/config.py`](src/config.py)).
 - **Request-path protections**: upload allow-listing and size caps, opaque error

@@ -11,8 +11,14 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
 from src.config import settings
-from src.db import models  # noqa: F401 - ensure models are registered on metadata
+from src.db import models
 from src.db.base import Base
+
+# `models` is imported for its side effect: importing the module registers every
+# ORM class on `Base.metadata`, which Alembic autogenerate relies on. The
+# reference below makes that dependency explicit and prevents static analysis
+# (CodeQL py/unused-import) from flagging the import as dead code.
+_ = models
 
 config = context.config
 

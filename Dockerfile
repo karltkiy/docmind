@@ -73,6 +73,12 @@ RUN useradd --create-home --uid 1000 appuser \
     && chown -R appuser:appuser /app /data
 USER appuser
 
+# Image-level liveness probe (Trivy AVD-DS-0026). Services that expose a
+# different surface override or disable it in their service-level healthcheck:
+# the Arq worker has no HTTP server, and the Streamlit demo listens on 8501.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS "${HEALTHCHECK_URL:-http://localhost:8000/health}" || exit 1
+
 EXPOSE 8000 8501
 
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
