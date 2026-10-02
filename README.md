@@ -376,6 +376,15 @@ docmind/
 | pgvector dimension error | `EMBEDDING_DIM` ≠ model output | Align the value, re-run migrations, re-index |
 | API exits immediately | Missing DB password or provider key | Set `POSTGRES_PASSWORD` / `OPENAI_API_KEY` in `.env` |
 
+## Security
+
+Please report vulnerabilities privately through GitHub's **Private
+Vulnerability Reporting** (Security tab → **Report a vulnerability**) — never in
+a public issue. See [`SECURITY.md`](SECURITY.md) for supported versions, scope,
+our response timeline, and safe-harbor terms. Automated checks (CodeQL,
+pip-audit, Dependency Review, gitleaks, Trivy) run in
+[`security.yml`](.github/workflows/security.yml).
+
 ## License
 
 Released under the **MIT License**. See the `LICENSE` file for the full text
