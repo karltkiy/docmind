@@ -305,7 +305,7 @@ proxy. The rollout logic lives in
 | Environment | `production` | Required reviewers (manual approval gate) |
 | Secret | `SSH_HOST`, `SSH_USER`, `SSH_KEY`, `SSH_PORT`, `DEPLOY_PATH` | VPS access + repo location |
 | Secret | `GHCR_USER`, `GHCR_PULL_TOKEN` | Pull the private image on the VPS |
-| Variable/Secret | `PRODUCTION_URL` | Environment link in the Actions UI |
+| Variable | `PRODUCTION_URL` | Environment link shown in the Actions UI |
 
 The VPS keeps its own `.env` (application secrets such as `POSTGRES_PASSWORD`
 and `OPENAI_API_KEY`); those values are never stored in this repository.
