@@ -117,6 +117,10 @@ services:
       ollama:
         condition: service_started
     command: arq src.worker.tasks.WorkerSettings
+    # The image-level HEALTHCHECK targets the API surface; the Arq worker has no
+    # HTTP endpoint, so the inherited probe is disabled for this service.
+    healthcheck:
+      disable: true
     logging: *default-logging
     deploy:
       resources:

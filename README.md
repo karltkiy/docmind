@@ -59,8 +59,8 @@ orchestrated with Docker Compose.
   upload allow-listing + size caps, opaque error payloads, `X-Request-ID`
   correlation, and structured JSON logging.
 - **Operational readiness.** `/health` reports liveness plus live PostgreSQL and
-  Redis probes; Alembic migrations (with the `vector` extension and HNSW index)
-  run automatically before the API boots.
+  Redis probes, the image ships a `HEALTHCHECK`, and Alembic migrations (with the
+  `vector` extension and HNSW index) run automatically before the API boots.
 
 ## Architecture
 
