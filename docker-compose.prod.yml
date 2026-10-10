@@ -193,6 +193,12 @@ services:
   ollama:
     # Opt-in only: `docker compose --profile ollama ...`. Cloud-only (OpenAI)
     # deployments never pay for this heavy, GPU-hungry service.
+    #
+    # NOTE: this upstream image is intentionally left on a mutable tag because
+    # Ollama does not publish convenient stable per-version digests. The risk is
+    # accepted: the service is opt-in, never published on the host, and holds no
+    # database credentials (Redis is password-protected). Pin the digest here if
+    # your policy requires immutable references.
     profiles: ["ollama"]
     image: ollama/ollama:latest
     restart: unless-stopped
@@ -214,6 +220,7 @@ services:
 
   ollama-init:
     profiles: ["ollama"]
+    # Same mutable-tag trade-off as the `ollama` service above.
     image: ollama/ollama:latest
     restart: "no"
     environment:
