@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import uuid
+from functools import partial
 from pathlib import Path
 from typing import Annotated
 
+import anyio
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -126,11 +128,13 @@ async def upload_document(
         )
 
     upload_dir = Path(settings.UPLOAD_DIR)
-    upload_dir.mkdir(parents=True, exist_ok=True)
+    # Blocking filesystem calls run in a worker thread so the event loop keeps
+    # serving other requests (an upload can be tens of megabytes).
+    await anyio.to_thread.run_sync(partial(upload_dir.mkdir, parents=True, exist_ok=True))
 
     document_id = uuid.uuid4()
     stored_path = upload_dir / f"{document_id}{suffix}"
-    stored_path.write_bytes(content)
+    await anyio.to_thread.run_sync(stored_path.write_bytes, content)
 
     document = Document(
         id=document_id,
@@ -140,7 +144,13 @@ async def upload_document(
         status=DocumentStatus.PROCESSING,
     )
     db.add(document)
-    await db.commit()
+    try:
+        await db.commit()
+    except Exception:
+        # Never leave the stored file behind when its metadata was not persisted.
+        await anyio.to_thread.run_sync(partial(stored_path.unlink, missing_ok=True))
+        logger.exception("Failed to persist document metadata for %s", document_id)
+        raise
     await db.refresh(document)
 
     try:
@@ -149,7 +159,7 @@ async def upload_document(
     except Exception as exc:
         logger.exception("Failed to enqueue document %s", document.id)
         # Do not leave an orphaned file behind when the job was never queued.
-        stored_path.unlink(missing_ok=True)
+        await anyio.to_thread.run_sync(partial(stored_path.unlink, missing_ok=True))
         document.status = DocumentStatus.FAILED
         document.error = "Failed to enqueue background processing job."
         await db.commit()
@@ -213,10 +223,11 @@ async def delete_document(document_id: uuid.UUID, db: DbSession) -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
 
     if document.file_path:
+        stored_path = Path(document.file_path)
         try:
-            Path(document.file_path).unlink(missing_ok=True)
+            await anyio.to_thread.run_sync(partial(stored_path.unlink, missing_ok=True))
         except OSError:
-            logger.warning("Could not remove file %s", document.file_path)
+            logger.warning("Could not remove file %s", stored_path)
 
     await db.delete(document)
     await db.commit()

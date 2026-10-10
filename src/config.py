@@ -83,6 +83,14 @@ class Settings(BaseSettings):
     # Explicit override; when unset it is derived from the POSTGRES_* values.
     DATABASE_URL: str | None = None
 
+    # Connection-pool sizing. Kept configurable because the production stack runs
+    # multiple uvicorn workers plus a separate Arq worker, each owning its own
+    # pool; the product must stay below the PostgreSQL ``max_connections`` limit.
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_RECYCLE_SECONDS: int = 1800
+    DB_POOL_TIMEOUT_SECONDS: int = 30
+
     # Redis / Arq
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
@@ -125,6 +133,15 @@ class Settings(BaseSettings):
             raise ValueError("RATE_LIMIT_WINDOW_SECONDS must be positive.")
         if self.UPLOAD_RATE_LIMIT_REQUESTS <= 0 or self.CHAT_RATE_LIMIT_REQUESTS <= 0:
             raise ValueError("Rate-limit request budgets must be positive.")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_pool_settings(self) -> Settings:
+        """Guard the connection-pool sizing against nonsensical values."""
+        if self.DB_POOL_SIZE <= 0 or self.DB_MAX_OVERFLOW < 0:
+            raise ValueError("DB_POOL_SIZE must be positive and DB_MAX_OVERFLOW non-negative.")
+        if self.DB_POOL_RECYCLE_SECONDS <= 0 or self.DB_POOL_TIMEOUT_SECONDS <= 0:
+            raise ValueError("DB pool recycle/timeout values must be positive.")
         return self
 
     @model_validator(mode="after")
