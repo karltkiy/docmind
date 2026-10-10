@@ -13,12 +13,19 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects import postgresql
 
 from alembic import op
-from src.config import settings
 
 revision = "0001_initial"
 down_revision = None
 branch_labels = None
 depends_on = None
+
+# Hard-coded vector width: an applied migration must be immutable and must never
+# depend on runtime settings, otherwise the same revision would materialise a
+# different schema in different environments and break ``alembic check``. This
+# is the width of the default OpenAI model (text-embedding-3-small). Switching
+# to a provider/model with a different width requires a NEW migration, not an
+# edit here (see src/db/schema_guard.py).
+_EMBEDDING_DIM = 1536
 
 
 def upgrade() -> None:
@@ -73,7 +80,7 @@ def upgrade() -> None:
         sa.Column("chunk_index", sa.Integer(), nullable=False),
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        sa.Column("embedding", Vector(settings.embedding_dim), nullable=True),
+        sa.Column("embedding", Vector(_EMBEDDING_DIM), nullable=True),
         sa.UniqueConstraint(
             "document_id",
             "chunk_index",
