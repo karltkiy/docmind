@@ -54,6 +54,14 @@ class ConsoleFormatter(logging.Formatter):
             datefmt="%Y-%m-%dT%H:%M:%S",
         )
 
+    def format(self, record: logging.LogRecord) -> str:
+        """Append the correlation id (when present) to the console line."""
+        message = super().format(record)
+        request_id = getattr(record, "request_id", None)
+        if request_id is not None:
+            message = f"{message} [request_id={request_id}]"
+        return message
+
 
 def configure_logging(level: str = "INFO", *, json_output: bool = True) -> None:
     """Install a single root handler and align third-party loggers with it.

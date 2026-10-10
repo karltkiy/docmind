@@ -52,10 +52,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # curl is required by the Compose healthcheck.
 # `apt-get upgrade` applies base-image security updates (e.g. libpcre2-8-0
-# CVE-2026-103111). The base image's pip/setuptools are then removed: the venv
-# on PATH provides every runtime dependency (the project no longer declares
-# setuptools at runtime), while pip's vendored copies are what the image scan
-# flags.
+# CVE-2026-103111). Trade-off: it makes the build depend on the mirror's current
+# package set, so the image is not bit-for-bit reproducible; the mandatory Trivy
+# gate in release-image.yml is what actually guarantees no known HIGH/CRITICAL
+# ships. The base image's pip/setuptools are then removed: the venv on PATH
+# provides every runtime dependency (the project no longer declares setuptools at
+# runtime), while pip's vendored copies are what the image scan flags.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && apt-get upgrade -y \

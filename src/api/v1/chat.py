@@ -138,7 +138,7 @@ async def chat_completion(
             # Never leak internal exception details to the client; correlate the
             # opaque message with the server-side traceback via ``request_id``.
             CHAT_STREAMS.labels("error").inc()
-            logger.exception("Chat completion failed (request_id=%s)", request_id)
+            logger.exception("Chat completion failed", extra={"request_id": request_id})
             yield _sse(
                 {
                     "type": "error",

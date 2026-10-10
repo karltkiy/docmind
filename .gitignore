@@ -37,5 +37,5 @@ uploads/
 .DS_Store
 Thumbs.db
 
+# Internal working notes (kept out of the published project surface).
 plans/
-docs/

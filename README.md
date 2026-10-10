@@ -59,10 +59,11 @@ orchestrated with Docker Compose.
   upload allow-listing + size caps, opaque error payloads, `X-Request-ID`
   correlation, and structured JSON logging.
 - **Operational readiness.** `/health` reports liveness plus live PostgreSQL and
-  Redis probes, the image ships a `HEALTHCHECK`, a startup guard verifies the
-  pgvector width against the configured embedding dimension, and Alembic
-  migrations (with the `vector` extension and HNSW index) run automatically
-  before the API boots.
+  Redis probes, the image ships a `HEALTHCHECK`, and a startup guard verifies the
+  pgvector width against the configured embedding dimension. Alembic migrations
+  (with the `vector` extension and HNSW index) are applied **once by the deploy
+  rollout** in production (local Compose applies them on `api` start); a
+  container restart never mutates the schema.
 
 ## Architecture
 
@@ -138,8 +139,9 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Migrations run automatically before the API starts. The API **fails fast** if
-`POSTGRES_PASSWORD` (or `DATABASE_URL`) or `OPENAI_API_KEY` is missing.
+In local Compose the `api` service applies migrations before it starts. The API
+**fails fast** if `POSTGRES_PASSWORD` (or `DATABASE_URL`) or `OPENAI_API_KEY` is
+missing.
 
 | Surface | URL |
 | --- | --- |
@@ -222,6 +224,8 @@ are mandatory for the production stack ([`docker-compose.prod.yml`](docker-compo
 | `POSTGRES_DB` | `docmind` | No | Database name |
 | `POSTGRES_HOST` / `POSTGRES_PORT` | `localhost` / `5432` | No | Compose overrides host to `db` |
 | `DATABASE_URL` | derived | No | Explicit async DSN; overrides `POSTGRES_*` (\*either this or the password is required) |
+| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | `10` / `10` | No | Per-process asyncpg pool sizing; keep the product under PostgreSQL `max_connections` |
+| `DB_POOL_RECYCLE_SECONDS` / `DB_POOL_TIMEOUT_SECONDS` | `1800` / `30` | No | Idle-connection recycle interval and wait-for-a-free-slot timeout |
 | `REDIS_HOST` / `REDIS_PORT` | `localhost` / `6379` | No | Compose overrides host to `redis` |
 | `REDIS_DB` | `0` | No | Redis logical database |
 | `REDIS_PASSWORD` | *(none)* | **Prod** | Enables `requirepass`; folded into the derived DSN |
@@ -243,6 +247,7 @@ are mandatory for the production stack ([`docker-compose.prod.yml`](docker-compo
 | `LOG_LEVEL` | `INFO` | No | Recognised stdlib level names |
 | `LOG_JSON` | `True` | No | Single-line JSON logs for containers |
 | `CORS_ORIGINS` | `*` | **Prod** | Comma-separated origins; production requires an explicit allow-list (never `*`) |
+| `DOCMIND_API_KEY` | *(none)* | No | Demo UI only: forwarded as `X-API-Key` so the Streamlit client can call an authenticated API |
 
 > **\*\*Fail-fast credentials:** if a provider is `openai` and `OPENAI_API_KEY`
 > is unset, the application refuses to start.
@@ -447,6 +452,7 @@ docmind/
     ├── test_chat_sse.py
     ├── test_chunker.py
     ├── test_integration_db.py     # Real PostgreSQL+pgvector (skipped without a DB)
+    ├── test_metrics_middleware.py # SSE pass-through + metrics instrumentation
     ├── test_parser.py
     ├── test_security.py           # API-key auth + rate limiter
     ├── test_upload_limits.py

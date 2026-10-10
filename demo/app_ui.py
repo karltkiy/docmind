@@ -28,6 +28,16 @@ SWAGGER_URL = f"{_PUBLIC_API_ROOT}/docs"
 
 REQUEST_TIMEOUT = 30
 
+# Optional shared secret: when the API runs with ``API_KEY`` set (always the case
+# in production), every ``/api/v1/*`` call must present it in this header.
+API_KEY = os.getenv("DOCMIND_API_KEY", "")
+
+
+def _auth_headers() -> dict[str, str]:
+    """Return the auth header when a key is configured, else an empty mapping."""
+    return {"X-API-Key": API_KEY} if API_KEY else {}
+
+
 st.set_page_config(page_title="DocMind AI - Demo", page_icon="🧠", layout="wide")
 
 st.title("🧠 DocMind AI")
@@ -49,7 +59,10 @@ with tab_docs:
         files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
         try:
             response = requests.post(
-                f"{API_BASE_URL}/documents/upload", files=files, timeout=REQUEST_TIMEOUT
+                f"{API_BASE_URL}/documents/upload",
+                files=files,
+                headers=_auth_headers(),
+                timeout=REQUEST_TIMEOUT,
             )
             if response.status_code == 202:
                 data = response.json()
@@ -69,7 +82,9 @@ with tab_docs:
         if st.button("Check Status"):
             try:
                 response = requests.get(
-                    f"{API_BASE_URL}/documents/{doc_id}/status", timeout=REQUEST_TIMEOUT
+                    f"{API_BASE_URL}/documents/{doc_id}/status",
+                    headers=_auth_headers(),
+                    timeout=REQUEST_TIMEOUT,
                 )
                 if response.status_code == 200:
                     data = response.json()
@@ -113,6 +128,7 @@ with tab_chat:
                     response = requests.post(
                         f"{API_BASE_URL}/chat/completions",
                         json={"query": prompt, "top_k": 4, "document_ids": [doc_id]},
+                        headers=_auth_headers(),
                         stream=True,
                         timeout=300,
                     )

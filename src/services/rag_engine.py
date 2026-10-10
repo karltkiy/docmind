@@ -115,6 +115,8 @@ class RAGEngine:
     # ------------------------------------------------------------------
     @_retry_transient
     async def _ollama_embeddings(self, texts: list[str]) -> list[list[float]]:
+        # ``/api/embed`` (batch ``input``) replaced ``/api/embeddings`` in Ollama
+        # 0.2.x; the server must be at least that version.
         response = await self.http.post(
             "/api/embed",
             json={"model": settings.embedding_model, "input": texts},

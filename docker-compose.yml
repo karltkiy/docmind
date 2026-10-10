@@ -135,6 +135,8 @@ services:
     environment:
       DOCMIND_API_URL: http://api:8000/api/v1
       DOCMIND_PUBLIC_API_URL: http://localhost:8000
+      # Forwarded so the demo works against an API that requires X-API-Key.
+      DOCMIND_API_KEY: ${API_KEY:-}
     ports:
       - "8501:8501"
     depends_on:

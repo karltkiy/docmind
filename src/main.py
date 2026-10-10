@@ -6,6 +6,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response, status
@@ -27,8 +28,61 @@ configure_logging(settings.LOG_LEVEL, json_output=settings.LOG_JSON)
 
 logger = logging.getLogger(__name__)
 
-_APP_VERSION = "1.0.0"
 _REQUEST_ID_HEADER = "X-Request-ID"
+
+
+def _resolve_version() -> str:
+    """Return the installed package version, falling back for a source checkout."""
+    try:
+        return version("docmind")
+    except PackageNotFoundError:
+        return "0.0.0.dev0"
+
+
+_APP_VERSION = _resolve_version()
+
+
+class RequestIdMiddleware:
+    """Pure-ASGI middleware that attaches a correlation id to every request.
+
+    Implemented at the ASGI level rather than via ``BaseHTTPMiddleware`` so the
+    response body is never wrapped or re-streamed; this keeps Server-Sent Events
+    unbuffered, mirroring :class:`src.metrics.MetricsMiddleware`.
+    """
+
+    def __init__(self, app: Callable[..., Awaitable[None]]) -> None:
+        self.app = app
+
+    async def __call__(
+        self,
+        scope: dict,
+        receive: Callable[..., Awaitable[dict]],
+        send: Callable[[dict], Awaitable[None]],
+    ) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers") or [])
+        incoming = headers.get(_REQUEST_ID_HEADER.lower().encode("latin-1"))
+        request_id = incoming.decode("latin-1") if incoming else uuid.uuid4().hex
+
+        # Starlette exposes ``scope["state"]`` to handlers as ``request.state``.
+        scope.setdefault("state", {})["request_id"] = request_id
+
+        async def send_wrapper(message: dict) -> None:
+            if message.get("type") == "http.response.start":
+                response_headers = list(message.get("headers") or [])
+                response_headers.append(
+                    (
+                        _REQUEST_ID_HEADER.lower().encode("latin-1"),
+                        request_id.encode("latin-1"),
+                    )
+                )
+                message["headers"] = response_headers
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
 @asynccontextmanager
@@ -77,28 +131,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# Added last so it is the outermost middleware and observes every request.
 # Pure ASGI: it never wraps the response body, which keeps SSE unbuffered.
 app.add_middleware(MetricsMiddleware)
-
-
-@app.middleware("http")
-async def attach_request_id(
-    request: Request, call_next: Callable[[Request], Awaitable[Response]]
-) -> Response:
-    """Attach a correlation id to the request state and every response."""
-    request_id = request.headers.get(_REQUEST_ID_HEADER) or uuid.uuid4().hex
-    request.state.request_id = request_id
-    response = await call_next(request)
-    response.headers[_REQUEST_ID_HEADER] = request_id
-    return response
+# Added last so it is the outermost middleware: every request (and response)
+# carries a correlation id while the body still streams untouched.
+app.add_middleware(RequestIdMiddleware)
 
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Log unexpected errors and return an opaque, correlated 500 payload."""
     request_id = getattr(request.state, "request_id", "unknown")
-    logger.exception("Unhandled exception (request_id=%s, path=%s)", request_id, request.url.path)
+    logger.exception(
+        "Unhandled exception (path=%s)",
+        request.url.path,
+        extra={"request_id": request_id},
+    )
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"detail": "Internal server error.", "request_id": request_id},

@@ -26,8 +26,12 @@ engine: AsyncEngine = create_async_engine(
     settings.database_url,
     echo=settings.DEBUG,
     pool_pre_ping=True,
-    pool_size=20,
-    max_overflow=10,
+    pool_size=settings.DB_POOL_SIZE,
+    max_overflow=settings.DB_MAX_OVERFLOW,
+    # Recycle idle connections and bound how long a request waits for a free
+    # slot, so a saturated pool surfaces as a timeout instead of hanging forever.
+    pool_recycle=settings.DB_POOL_RECYCLE_SECONDS,
+    pool_timeout=settings.DB_POOL_TIMEOUT_SECONDS,
 )
 
 SessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(
