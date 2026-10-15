@@ -58,9 +58,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # ships. The base image's pip/setuptools are then removed: the venv on PATH
 # provides every runtime dependency (the project no longer declares setuptools at
 # runtime), while pip's vendored copies are what the image scan flags.
+#
+# `APT_CACHE_BUST` defeats the layer cache for this step alone. BuildKit caches a
+# RUN instruction together with the `apt-get update` index it fetched, so a newer
+# Debian security update can never invalidate the layer on its own: the image
+# keeps shipping stale packages (curl 8.14.1-2+deb13u5 while ...deb13u7 was
+# already published) until the instruction itself changes. CI passes the run id,
+# so the apt layer is rebuilt on every release while the far more expensive pip
+# layer stays cached; the local default preserves normal caching.
+ARG APT_CACHE_BUST=0
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && apt-get upgrade -y \
+    && echo "apt layer rebuilt (cache bust: ${APT_CACHE_BUST})" \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /usr/local/lib/python*/site-packages/pip \
               /usr/local/lib/python*/site-packages/pip-*.dist-info \
