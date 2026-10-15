@@ -162,6 +162,9 @@ class RAGEngine:
             response = await self.openai.chat.completions.create(
                 model=settings.llm_model,
                 messages=[{"role": "user", "content": prompt}],
+                # Flat argument: the nested ``reasoning.effort`` object is reserved
+                # for the Responses API. Never sent to Ollama.
+                reasoning_effort=settings.LLM_REASONING_EFFORT,
             )
             return response.choices[0].message.content or ""
         http_response = await self.http.post(
@@ -179,6 +182,7 @@ class RAGEngine:
                 model=settings.llm_model,
                 messages=[{"role": "user", "content": prompt}],
                 stream=True,
+                reasoning_effort=settings.LLM_REASONING_EFFORT,
             )
             async for chunk in stream:
                 if not chunk.choices:
