@@ -62,6 +62,12 @@ jobs:
           push: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Rebuilds the apt layer from the current Debian mirror on every run.
+          # The same value is passed to the push step below, so the image that
+          # was scanned and the image that gets published stay identical; only
+          # that one layer is invalidated, the pip layer remains cached.
+          build-args: |
+            APT_CACHE_BUST=${{ github.run_id }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -102,6 +108,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APT_CACHE_BUST=${{ github.run_id }}
           provenance: true
           sbom: true
           cache-from: type=gha
