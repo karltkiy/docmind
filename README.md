@@ -120,7 +120,7 @@ from pgvector, and streams a grounded answer with citations.
 | Migrations | Alembic (async env) |
 | Task queue | Arq on Redis |
 | Embeddings | OpenAI `text-embedding-3-small` **or** Ollama `nomic-embed-text` |
-| Chat models | OpenAI `gpt-4o-mini` **or** Ollama `llama3.1:8b` |
+| Chat models | OpenAI `gpt-6-luna` **or** Ollama `llama3.1:8b` |
 | HTTP client | `httpx` (Ollama) + official `openai` SDK |
 | Resillience | `tenacity` (exponential-backoff retries) |
 | PDF extraction | `pypdf` |
@@ -233,7 +233,8 @@ are mandatory for the production stack ([`docker-compose.prod.yml`](docker-compo
 | `EMBEDDING_PROVIDER` | `openai` | No | `openai` or `ollama` |
 | `LLM_PROVIDER` | `openai` | No | `openai` or `ollama` |
 | `EMBEDDING_MODEL` | per provider | No | Defaults: `text-embedding-3-small` / `nomic-embed-text` |
-| `LLM_MODEL` | per provider | No | Defaults: `gpt-4o-mini` / `llama3.1:8b` |
+| `LLM_MODEL` | per provider | No | Defaults: `gpt-6-luna` / `llama3.1:8b` |
+| `LLM_REASONING_EFFORT` | `none` | No | OpenAI only: `none`, `low`, `medium`, `high`, `xhigh`, `max`. `none` departs from the provider default (`medium`) and disables reasoning tokens |
 | `EMBEDDING_DIM` | `1536` / `768` | **Prod** | Must match model **and** migration; verified at startup |
 | `RETRIEVAL_TOP_K` | `4` | No | Default chunks retrieved (override per request: 1–20) |
 | `CHUNK_SIZE` | `500` | No | Whitespace-token window |
@@ -266,6 +267,16 @@ are mandatory for the production stack ([`docker-compose.prod.yml`](docker-compo
 > **Production-required variables:** the prod stack aborts unless
 > `EMBEDDING_DIM` and a non-`*` `CORS_ORIGINS` are set in the server-side `.env`.
 > See the [production runbook](#production-runbook).
+>
+> **Switching the chat model:** `LLM_MODEL` selects the OpenAI chat model and
+> `LLM_REASONING_EFFORT` its reasoning budget. Chat Completions takes the flat
+> `reasoning_effort` argument; the nested `reasoning.effort` object belongs to the
+> Responses API and is not used here. The shipped default is `gpt-6-luna` with
+> reasoning disabled (`none`) — a deliberate deviation from the provider default
+> (`medium`) that trades answer depth for cost and latency. Rolling back is a
+> configuration-only change: point `LLM_MODEL` at the previous model (or raise
+> `LLM_REASONING_EFFORT`) and restart. No code change, migration, or re-index is
+> involved, because the embedding model is untouched.
 
 ## Development & Quality Assurance
 

@@ -24,13 +24,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Provider = Literal["openai", "ollama"]
 Environment = Literal["development", "staging", "production"]
+# Documented reasoning budgets for the OpenAI chat models. Chat Completions
+# accepts the flat ``reasoning_effort`` argument; the nested ``reasoning.effort``
+# object belongs to the Responses API and is not used here.
+ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh", "max"]
 
 _DEFAULT_EMBEDDING_MODELS: dict[str, str] = {
     "openai": "text-embedding-3-small",
     "ollama": "nomic-embed-text",
 }
 _DEFAULT_LLM_MODELS: dict[str, str] = {
-    "openai": "gpt-4o-mini",
+    "openai": "gpt-6-luna",
     "ollama": "llama3.1:8b",
 }
 _DEFAULT_EMBEDDING_DIMS: dict[str, int] = {
@@ -103,6 +107,12 @@ class Settings(BaseSettings):
     LLM_PROVIDER: Provider = "openai"
     EMBEDDING_MODEL: str | None = None
     LLM_MODEL: str | None = None
+    # Reasoning budget for OpenAI chat completions. ``none`` deliberately departs
+    # from the provider default (``medium``): reasoning tokens are disabled to keep
+    # RAG answers cheap and low-latency. Per the provider documentation ``none``
+    # is also the only value for which Chat Completions supports function calling,
+    # so raising it changes that contract as well. Ignored by the ollama provider.
+    LLM_REASONING_EFFORT: ReasoningEffort = "none"
     EMBEDDING_DIM: int | None = None
     RETRIEVAL_TOP_K: int = 4
     CHUNK_SIZE: int = 500
