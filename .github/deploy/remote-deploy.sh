@@ -15,6 +15,11 @@
 #   * Applies migrations exactly once, before switching traffic.
 #   * Verifies /health and only auto-rolls back when the previous image can
 #     actually understand the current database revision.
+#   * Is reusable for a second, isolated contour (the public demo) through
+#     environment variables alone: COMPOSE_FILE, ENV_FILE, STATE_FILE,
+#     BACKUP_DIR, HEALTH_URL, TRAFFIC_SERVICES, POST_DEPLOY_CMD and the
+#     optional second image DOCMIND_DEMO_IMAGE. Nothing about the production
+#     stack is hard-coded apart from the defaults below.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -31,6 +36,13 @@ STATE_FILE="${STATE_FILE:-.deployed_image_tag}"
 BACKUP_DIR="${BACKUP_DIR:-backups}"
 KEEP_BACKUPS="${KEEP_BACKUPS:-5}"
 ENV_FILE="${ENV_FILE:-.env}"
+# Services switched to the new image after migrations. The demo contour passes
+# TRAFFIC_SERVICES="api worker demo" so its Streamlit UI rolls forward with the
+# API it talks to.
+TRAFFIC_SERVICES="${TRAFFIC_SERVICES:-api worker}"
+# Optional hook executed once the stack is verified healthy, e.g. loading the
+# demo corpus (`... --profile seed run --rm demo-seed`). Empty by default.
+POST_DEPLOY_CMD="${POST_DEPLOY_CMD:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -93,13 +105,18 @@ assert_remote_dsn() {
     done
 }
 
-image_ref_for_tag() {
+image_ref_for() {
     # Pull ``repo:tag`` and resolve its immutable ``repo@sha256:...`` reference.
-    local tag="$1" ref
-    docker pull "${DOCMIND_IMAGE}:${tag}" >/dev/null
+    local repo="$1" tag="$2" ref
+    docker pull "${repo}:${tag}" >/dev/null
     ref="$(docker image inspect --format '{{index .RepoDigests 0}}' \
-        "${DOCMIND_IMAGE}:${tag}" 2>/dev/null || true)"
-    printf '%s' "${ref:-${DOCMIND_IMAGE}:${tag}}"
+        "${repo}:${tag}" 2>/dev/null || true)"
+    printf '%s' "${ref:-${repo}:${tag}}"
+}
+
+image_ref_for_tag() {
+    # Resolve a tag of the primary (API/worker) image.
+    image_ref_for "${DOCMIND_IMAGE}" "$1"
 }
 
 current_db_revision() {
@@ -149,7 +166,15 @@ rollback() {
     log "rolling back to ${previous_tag}"
     local old_ref
     old_ref="$(image_ref_for_tag "${previous_tag}")"
-    DOCMIND_IMAGE_REF="${old_ref}" compose up -d --no-build
+    DOCMIND_IMAGE_REF="${old_ref}"
+    export DOCMIND_IMAGE_REF
+    # A second application image (the demo UI) must roll back in lockstep,
+    # otherwise the stack would mix an old and a new version.
+    if [[ -n "${DOCMIND_DEMO_IMAGE:-}" ]]; then
+        DOCMIND_DEMO_IMAGE_REF="$(image_ref_for "${DOCMIND_DEMO_IMAGE}" "${previous_tag}")"
+        export DOCMIND_DEMO_IMAGE_REF
+    fi
+    compose up -d --no-build
     if wait_for_health; then
         log "rollback to ${previous_tag} succeeded"
         printf '%s' "${previous_tag}" > "${STATE_FILE}"
@@ -187,6 +212,16 @@ log "resolving ${DOCMIND_IMAGE}:${IMAGE_TAG}"
 DOCMIND_IMAGE_REF="$(image_ref_for_tag "${IMAGE_TAG}")"
 export DOCMIND_IMAGE_REF
 log "deploying ${DOCMIND_IMAGE_REF}"
+
+# Optional second image, used by stacks that run more than one application
+# image (the demo contour ships its Streamlit UI from the same commit as the API
+# it talks to).
+if [[ -n "${DOCMIND_DEMO_IMAGE:-}" ]]; then
+    log "resolving ${DOCMIND_DEMO_IMAGE}:${IMAGE_TAG}"
+    DOCMIND_DEMO_IMAGE_REF="$(image_ref_for "${DOCMIND_DEMO_IMAGE}" "${IMAGE_TAG}")"
+    export DOCMIND_DEMO_IMAGE_REF
+    log "deploying second image ${DOCMIND_DEMO_IMAGE_REF}"
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Ensure backing services are healthy
@@ -238,8 +273,10 @@ log "applying database migrations"
 compose run --rm --no-deps api alembic upgrade head
 
 deploy_started=1
-log "starting api and worker on ${IMAGE_TAG}"
-compose up -d --no-build api worker
+log "starting ${TRAFFIC_SERVICES} on ${IMAGE_TAG}"
+# Word splitting is intended: TRAFFIC_SERVICES is a space-separated service list.
+# shellcheck disable=SC2086
+compose up -d --no-build ${TRAFFIC_SERVICES}
 
 # ---------------------------------------------------------------------------
 # 5. Verify health (rolls back automatically on failure)
@@ -247,6 +284,17 @@ compose up -d --no-build api worker
 if ! wait_for_health; then
     rollback || true
     exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 5b. Optional post-deploy hook
+# ---------------------------------------------------------------------------
+# Runs only after the stack has been verified healthy, and before the state file
+# is written, so a failing hook aborts the rollout instead of leaving a
+# half-provisioned contour marked as deployed.
+if [[ -n "${POST_DEPLOY_CMD}" ]]; then
+    log "running post-deploy hook"
+    ${POST_DEPLOY_CMD}
 fi
 
 # ---------------------------------------------------------------------------

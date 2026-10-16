@@ -1,0 +1,321 @@
+# ---------------------------------------------------------------------------
+# Public demo stack for the VPS.
+#
+# This is a SEPARATE, isolated contour from docker-compose.prod.yml:
+#
+#   * `name: docmind-demo` gives it its own Compose project, networks, volumes
+#     and container names, so a rollout here can never restart or reshape the
+#     production stack (and vice versa).
+#   * It has its own server-side env file (``.env.demo``) with its own
+#     POSTGRES_PASSWORD, REDIS_PASSWORD and API_KEY. The demo key is NOT the
+#     production key: the demo is public, the production API is not.
+#   * The API is published on the host loopback at 8001 (production owns 8000)
+#     purely so the rollout can probe /health; only the Streamlit UI is meant to
+#     be reachable from the internet, and only through the reverse proxy.
+#
+# Why a whole stack instead of reusing production: API_KEY is a single
+# installation-wide secret (src/api/deps.py) and EMBEDDING_DIM is bound to the
+# Alembic migration through the startup guard (src/db/schema_guard.py). A
+# separate public demo therefore needs its own database, its own credentials and
+# its own api/worker pair.
+#
+# Usage (see .github/deploy/remote-deploy.sh for the automated rollout):
+#
+#   DOCMIND_IMAGE_REF=ghcr.io/owner/docmind@sha256:<digest> \
+#   DOCMIND_DEMO_IMAGE_REF=ghcr.io/owner/docmind-demo@sha256:<digest> \
+#     docker compose -f docker-compose.demo.yml up -d --no-build
+#
+# The seed corpus is pulled in on demand, never on every start:
+#
+#   docker compose -f docker-compose.demo.yml --profile seed run --rm demo-seed
+# ---------------------------------------------------------------------------
+name: docmind-demo
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-hardening-strict: &hardening-strict
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+x-hardening-basic: &hardening-basic
+  security_opt:
+    - no-new-privileges:true
+
+# Shared application environment. Deliberately tighter than production: the
+# demo is public, so the rate-limit budgets are the cost guardrail that keeps a
+# visitor (or a scraper) from burning the provider budget.
+#
+# NOTE on the rate limiter: it is process-local (src/api/deps.py) and its key is
+# the TCP peer address. Caddy talks to the container through the Docker gateway,
+# so the api service is started with FORWARDED_ALLOW_IPS set below; without it
+# every visitor collapses into one client and CHAT_RATE_LIMIT_REQUESTS becomes a
+# shared global budget instead of a per-visitor one.
+x-demo-app-env: &demo-app-env
+  POSTGRES_HOST: db
+  REDIS_HOST: redis
+  UPLOAD_DIR: /data/uploads
+  LOG_JSON: "True"
+  ENVIRONMENT: production
+  API_KEY: ${API_KEY:?set API_KEY in the server-side .env.demo}
+  # Docs stay off: the public surface must not advertise the schema. The demo UI
+  # hides its "API docs" link accordingly.
+  ENABLE_DOCS: ${ENABLE_DOCS:-False}
+  METRICS_ENABLED: ${METRICS_ENABLED:-True}
+  EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+  LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+  EMBEDDING_DIM: ${EMBEDDING_DIM:?set EMBEDDING_DIM in the server-side .env.demo}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+  LLM_MODEL: ${LLM_MODEL:-}
+  # Never "*": the production posture refuses to boot without an explicit list.
+  # The Streamlit UI calls the API server-side, so this is not exercised by the
+  # iframe embed; it exists to satisfy the security posture.
+  CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS in the server-side .env.demo}
+  # Cost guardrail for a public deployment.
+  RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-True}
+  RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+  CHAT_RATE_LIMIT_REQUESTS: ${CHAT_RATE_LIMIT_REQUESTS:-5}
+  # Uploads are unreachable from the demo UI, so this only governs the seeding
+  # run: leave the script enough headroom to load the corpus in one pass.
+  UPLOAD_RATE_LIMIT_REQUESTS: ${UPLOAD_RATE_LIMIT_REQUESTS:-10}
+  # Without these, uvicorn ignores X-Forwarded-For coming from Caddy through the
+  # Docker gateway and treats every visitor as the same client.
+  FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-172.16.0.0/12}
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    <<: *hardening-basic
+    env_file:
+      - .env.demo
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env.demo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.demo}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env.demo}
+    volumes:
+      # Project-scoped volume: physically distinct from production's pg_data.
+      - demo_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    <<: *hardening-strict
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in the server-side .env.demo}
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?set REDIS_PASSWORD in the server-side .env.demo}
+    command: >
+      sh -c 'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"'
+    volumes:
+      - demo_redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
+
+  api:
+    image: ${DOCMIND_IMAGE_REF:?set DOCMIND_IMAGE_REF to repo@sha256:<digest>}
+    restart: unless-stopped
+    <<: *hardening-strict
+    env_file:
+      - .env.demo
+    environment:
+      <<: *demo-app-env
+      DEBUG: "False"
+    ports:
+      # 8001, not 8000: production owns the loopback 8000 binding. This binding
+      # exists for the rollout health probe, not for public traffic.
+      - "127.0.0.1:8001:8000"
+    volumes:
+      - demo_uploads:/data/uploads
+    read_only: true
+    tmpfs:
+      - /tmp
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # A single worker keeps the per-process rate limiter honest (two workers
+    # would double every documented budget).
+    command:
+      [
+        "uvicorn",
+        "src.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--workers",
+        "1",
+      ]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+
+  worker:
+    image: ${DOCMIND_IMAGE_REF:?set DOCMIND_IMAGE_REF to repo@sha256:<digest>}
+    restart: unless-stopped
+    <<: *hardening-strict
+    env_file:
+      - .env.demo
+    environment:
+      <<: *demo-app-env
+      DEBUG: "False"
+    volumes:
+      - demo_uploads:/data/uploads
+    read_only: true
+    tmpfs:
+      - /tmp
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["arq", "src.worker.tasks.WorkerSettings"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import pathlib, sys; sys.exit(0 if b'arq' in pathlib.Path('/proc/1/cmdline').read_bytes() else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+
+  demo:
+    # Built from the same repository with INSTALL_EXTRAS="[demo]" (Streamlit);
+    # the API image deliberately ships without the presentation extras.
+    image: ${DOCMIND_DEMO_IMAGE_REF:?set DOCMIND_DEMO_IMAGE_REF to repo@sha256:<digest>}
+    restart: unless-stopped
+    <<: *hardening-strict
+    env_file:
+      - .env.demo
+    environment:
+      # The UI reaches the API over the Compose network; the browser never
+      # talks to the API and never sees the key.
+      DOCMIND_API_URL: http://api:8000/api/v1
+      # Public origin of the demo itself, used to build the link on the page.
+      DOCMIND_PUBLIC_API_URL: ${DOCMIND_PUBLIC_API_URL:?set DOCMIND_PUBLIC_API_URL in .env.demo}
+      DOCMIND_API_KEY: ${API_KEY:?set API_KEY in .env.demo}
+      # Read-only demo: no upload widget, corpus picked from the seeded list,
+      # question length capped. See demo/app_ui.py.
+      DOCMIND_DEMO_MODE: "1"
+      DOCMIND_DEMO_MAX_QUESTION_CHARS: ${DOCMIND_DEMO_MAX_QUESTION_CHARS:-500}
+      DOCMIND_DEMO_TOP_K: ${DOCMIND_DEMO_TOP_K:-4}
+    ports:
+      # Loopback only; the public entrypoint is the Caddy vhost for
+      # demo.<domain>, which also terminates TLS.
+      - "127.0.0.1:8501:8501"
+    read_only: true
+    tmpfs:
+      - /tmp
+    depends_on:
+      api:
+        condition: service_healthy
+    # headless=true is mandatory in a container: without it Streamlit blocks on
+    # the first-run email prompt. enableXsrfProtection stays at its default
+    # because the browser loads the app directly from the demo origin, so the
+    # Origin header matches the Host and WebSocket upgrades validate.
+    command:
+      [
+        "streamlit",
+        "run",
+        "demo/app_ui.py",
+        "--server.port",
+        "8501",
+        "--server.address",
+        "0.0.0.0",
+        "--server.headless",
+        "true",
+        "--browser.gatherUsageStats",
+        "false",
+      ]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512m
+
+  demo-seed:
+    # One-shot corpus loader. Runs under the "seed" profile so a restart never
+    # re-uploads documents; the rollout invokes it explicitly after the API is
+    # healthy. Idempotent: documents already present (matched by filename) are
+    # skipped, see demo/seed_corpus.py.
+    image: ${DOCMIND_DEMO_IMAGE_REF:?set DOCMIND_DEMO_IMAGE_REF to repo@sha256:<digest>}
+    profiles: ["seed"]
+    restart: "no"
+    <<: *hardening-strict
+    env_file:
+      - .env.demo
+    environment:
+      DOCMIND_API_URL: http://api:8000/api/v1
+      DOCMIND_API_KEY: ${API_KEY:?set API_KEY in .env.demo}
+      CORPUS_DIR: /corpus
+      # Indexing is asynchronous: wait for each document to reach "completed"
+      # (DocumentStatus.COMPLETED, see src/db/models.py).
+      SEED_WAIT_SECONDS: ${SEED_WAIT_SECONDS:-180}
+    volumes:
+      # Drop the demo documents into ${DEPLOY_PATH}/corpus on the server.
+      - ./corpus:/corpus:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    depends_on:
+      api:
+        condition: service_healthy
+    command: ["python", "/app/demo/seed_corpus.py"]
+    logging: *default-logging
+
+volumes:
+  demo_pg_data:
+  demo_redis_data:
+  demo_uploads:

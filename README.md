@@ -335,6 +335,8 @@ flowchart LR
 | [`dependency-review.yml`](.github/workflows/dependency-review.yml) | PR to `main` | Fails when a new dependency has a HIGH/CRITICAL advisory |
 | [`release-image.yml`](.github/workflows/release-image.yml) | push to `main` / tags | Build, Trivy-scan, push to GHCR with SBOM + provenance |
 | [`deploy.yml`](.github/workflows/deploy.yml) | after release / manual | Gated SSH rollout: mandatory backup, migrations, health verify + rollback (fails loudly when the VPS is not configured) |
+| [`release-demo-image.yml`](.github/workflows/release-demo-image.yml) | push to `main` / tags | Builds the Streamlit demo image (`INSTALL_EXTRAS="[demo]"`) separately, so a presentation-layer CVE cannot block a production release |
+| [`deploy-demo.yml`](.github/workflows/deploy-demo.yml) | after demo image / manual | Deploys the isolated public demo contour (own Compose project, database and key), then seeds the corpus; not approval-gated |
 
 **Production topology:** [`docker-compose.prod.yml`](docker-compose.prod.yml)
 runs a standalone stack with no published database/Redis ports, log rotation,
@@ -342,7 +344,9 @@ resource limits and container hardening (`no-new-privileges`, dropped
 capabilities, read-only root filesystem for the app services); only the API is
 bound to `127.0.0.1:8000` for a reverse proxy (see
 [`deploy/nginx/docmind.conf.example`](deploy/nginx/docmind.conf.example) for an
-SSE-aware nginx config). Images are referenced by immutable digest
+SSE-aware nginx config, or
+[`deploy/caddy/Caddyfile.example`](deploy/caddy/Caddyfile.example) for the Caddy
+equivalent with automatic TLS). Images are referenced by immutable digest
 (`repo@sha256:...`), and migrations are **not** run on container start: the
 rollout applies them once, explicitly. **Ollama is opt-in** behind the `ollama`
 Compose profile: cloud-only (OpenAI) deployments never start it, while Ollama
@@ -359,6 +363,12 @@ explicit `CORS_ORIGINS` are set. Do not set `DATABASE_URL`/`REDIS_URL` to a
 vector width with the `document_chunks.embedding` column and refuses to boot on a
 mismatch, instead of failing later with an opaque pgvector error.
 
+**Optional public demo:** a second, fully isolated stack
+([`docker-compose.demo.yml`](docker-compose.demo.yml), Compose project
+`docmind-demo`) serves a read-only Streamlit UI on its own subdomain — own
+database, own `API_KEY`, own rate and spend limits, uploads disabled and a
+pre-seeded corpus. See [`docs/DEMO.md`](docs/DEMO.md).
+
 ### Required GitHub configuration
 
 | Kind | Name | Purpose |
@@ -367,6 +377,9 @@ mismatch, instead of failing later with an opaque pgvector error.
 | Secret | `SSH_HOST`, `SSH_USER`, `SSH_KEY`, `SSH_PORT`, `DEPLOY_PATH` | VPS access + repo location |
 | Secret | `GHCR_USER`, `GHCR_PULL_TOKEN` | Pull the private image on the VPS |
 | Variable | `PRODUCTION_URL` | Environment link shown in the Actions UI |
+| Environment | `demo` (optional) | Public demo contour; no required reviewers |
+| Secret | `DEPLOY_PATH` under `demo` (optional) | Must point at a **different** directory than production |
+| Variable | `DEMO_URL` (optional) | Public demo URL shown in the Actions UI |
 
 The VPS keeps its own `.env` (application secrets such as `POSTGRES_PASSWORD`
 and `OPENAI_API_KEY`); those values are never stored in this repository.
@@ -395,7 +408,9 @@ and `OPENAI_API_KEY`); those values are never stored in this repository.
 
 For a complete step-by-step walkthrough (VPS bootstrap, SSH keys, server-side
 `.env`, environment secrets, reverse proxy, verification, rollback and restore),
-see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). A single end-to-end runbook that
+also covers VPS hardening, the isolated public demo contour and day-2 operations
+lives in [`docs/RUNBOOK.md`](docs/RUNBOOK.md) (written in Russian).
 
 ### Local commands
 

@@ -15,12 +15,16 @@ __pycache__/
 coverage.xml
 htmlcov/
 
-# Deployment state and backups (written on the production host)
+# Deployment state and backups (written on the production and demo hosts)
 .deployed_image_tag
+.deployed_demo_image_tag
 backups/
+backups-demo/
 
+# Both server-side env files: production (.env) and the isolated demo (.env.demo).
 .env
 .env.local
+.env.demo
 *.pem
 *.key
 

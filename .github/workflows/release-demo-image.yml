@@ -1,0 +1,130 @@
+name: Release Demo Image
+
+# Builds the Streamlit demo image: the same repository, the same commit and the
+# same Dockerfile, but with INSTALL_EXTRAS="[demo]" so the presentation layer
+# ships with it.
+#
+# Deliberately a separate workflow from "Release Image". The demo image carries
+# Streamlit and its dependency tree, which nothing in the API runtime imports;
+# if that tree fails the Trivy gate here, only the demo image is blocked. Folding
+# it into the production workflow would make a presentation-layer CVE stop
+# production deployments.
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: release-demo-image-${{ github.ref }}
+  cancel-in-progress: false
+
+# The tag set mirrors the production image (notably type=sha,format=long), so the
+# demo deploy can resolve `sha-<full-sha>` exactly like the production deploy and
+# both contours end up on the same commit.
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}-demo
+
+jobs:
+  build-scan-push:
+    name: Build, scan and push demo image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Derive image metadata and tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # Same two-pass shape as the production workflow: build and scan locally,
+      # push only when clean, and rebuild from the warm GHA cache. The demo
+      # layer set differs from the API image, so it keeps its own cache.
+      - name: Build image locally for scanning
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APT_CACHE_BUST=${{ github.run_id }}
+            INSTALL_EXTRAS=[demo]
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Derive scan reference from generated tags
+        id: image
+        run: |
+          # metadata-action lowercases the image path; reuse its first tag to
+          # guarantee the scan targets the exact local image we just built.
+          first_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | head -n1)"
+          if [ -z "${first_tag}" ]; then
+            echo "No image tag was generated." >&2
+            exit 1
+          fi
+          echo "scan-ref=${first_tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Scan image for HIGH/CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.image.outputs.scan-ref }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: table
+          exit-code: "1"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image with SBOM and provenance
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APT_CACHE_BUST=${{ github.run_id }}
+            INSTALL_EXTRAS=[demo]
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Publish build summary
+        run: |
+          {
+            echo "### Demo image published"
+            echo ""
+            echo "- **Tags:** \`${{ steps.meta.outputs.tags }}\`"
+            echo "- **Digest:** \`${{ steps.push.outputs.digest }}\`"
+            echo "- **Extras:** \`[demo]\` (Streamlit UI)"
+            echo "- **Attestations:** SBOM + provenance"
+          } >> "$GITHUB_STEP_SUMMARY"

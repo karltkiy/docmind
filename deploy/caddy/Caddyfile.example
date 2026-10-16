@@ -1,0 +1,123 @@
+# ---------------------------------------------------------------------------
+# Example Caddy configuration for DocMind (production API + public demo).
+#
+# Caddy obtains and renews TLS certificates automatically over ACME, so unlike
+# the nginx sample (deploy/nginx/docmind.conf.example) there are no certificate
+# paths to maintain: point the DNS records at the VPS, open 80/443, and reload.
+#
+# Both upstreams are bound to the host loopback only:
+#   api   -> 127.0.0.1:8000   (docker-compose.prod.yml, name: docmind-prod)
+#   demo  -> 127.0.0.1:8501   (docker-compose.demo.yml, name: docmind-demo)
+#
+# Apply with:
+#   sudo caddy validate --config /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+# ---------------------------------------------------------------------------
+
+{
+	# Contact address for ACME (certificate expiry notices).
+	email admin@example.com
+	# HTTP/3 is opt-in and needs 443/udp open as well:
+	# servers {
+	# 	protocols h1 h2 h3
+	# }
+}
+
+# ---------------------------------------------------------------------------
+# Production API.
+# ---------------------------------------------------------------------------
+api.example.com {
+	# Keep slightly above MAX_UPLOAD_MB (25 MB) so multipart overhead cannot
+	# truncate a legitimate upload.
+	request_body {
+		max_size 30MB
+	}
+
+	log {
+		output file /var/log/caddy/docmind-api.log
+		format json
+	}
+
+	# Public liveness probe: /health is not behind the API key by design, so a
+	# monitoring system can reach it without a secret.
+	handle /health {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	# /metrics is served without authentication whenever METRICS_ENABLED is true
+	# (src/main.py). Scrape it from inside the host or a private network — never
+	# expose it to the internet.
+	handle /metrics {
+		@internal remote_ip 127.0.0.1 10.0.0.0/8 172.16.0.0/12
+		handle @internal {
+			reverse_proxy 127.0.0.1:8000
+		}
+		respond 404
+	}
+
+	# Server-Sent Events: the chat endpoint streams tokens incrementally, so
+	# buffering must be disabled and neither side may time out mid-answer.
+	handle /api/v1/chat/completions {
+		reverse_proxy 127.0.0.1:8000 {
+			flush_interval -1
+			# Overwrite instead of appending: a client-supplied
+			# X-Forwarded-For would otherwise let anyone forge the address the
+			# per-client rate limiter keys on.
+			header_up X-Forwarded-For {remote_host}
+			transport http {
+				read_timeout 900s
+				write_timeout 900s
+			}
+		}
+	}
+
+	# Everything else: /api/v1/documents/*, /, 401/429 responses from the app.
+	# No `encode` here on purpose: compression in front of a streaming API buys
+	# nothing and risks buffering the SSE route above.
+	handle {
+		reverse_proxy 127.0.0.1:8000 {
+			header_up X-Forwarded-For {remote_host}
+			transport http {
+				dial_timeout 5s
+				read_timeout 120s
+			}
+		}
+	}
+}
+
+# ---------------------------------------------------------------------------
+# Public demo (Streamlit UI on an isolated stack).
+#
+# Only the UI is published: the demo API stays on loopback, and the browser
+# never sees its API key because every API call is made server-side from the
+# Streamlit container (demo/app_ui.py).
+# ---------------------------------------------------------------------------
+demo.example.com {
+	log {
+		output file /var/log/caddy/docmind-demo.log
+		format json
+	}
+
+	# Caddy upgrades the WebSocket transparently (Streamlit's /_stcore/stream)
+	# and must not time out a long-lived connection.
+	reverse_proxy 127.0.0.1:8501 {
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		transport http {
+			dial_timeout 5s
+			# 0 keeps the WebSocket and the upload-free session alive as long as
+			# the visitor keeps the tab open.
+			read_timeout 0
+			write_timeout 0
+		}
+	}
+
+	# Embedding this page in an iframe on the marketing site is intentional, so
+	# do NOT add X-Frame-Options here. To restrict who may frame it, set an
+	# explicit allow-list instead of removing the protection entirely:
+	# header Content-Security-Policy "frame-ancestors 'self' https://mysite.example"
+	#
+	# Streamlit's XSRF protection stays at its default: the browser loads the app
+	# from this same origin, so the Origin header matches the Host and the
+	# WebSocket upgrade validates.
+}

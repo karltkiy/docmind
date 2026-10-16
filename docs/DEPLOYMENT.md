@@ -120,6 +120,15 @@ location /api/v1/chat/completions {
 ```
 
 A complete sample lives in [`deploy/nginx/docmind.conf.example`](../deploy/nginx/docmind.conf.example).
+A Caddy equivalent — automatic TLS, the SSE route and the optional public demo
+vhost in one file — lives in [`deploy/caddy/Caddyfile.example`](../deploy/caddy/Caddyfile.example).
+
+> **Forward the real client address.** The per-client rate limiter keys on the TCP
+> peer address ([`src/api/deps.py`](../src/api/deps.py)). Behind a reverse proxy
+> that address is the Docker gateway rather than the visitor, unless uvicorn is
+> told to trust `X-Forwarded-For` from it. Set `FORWARDED_ALLOW_IPS` to the
+> gateway range — and make the proxy *overwrite* the header, not append to it —
+> so a single visitor's burst does not consume everyone's budget.
 
 ## 7. Verification
 
@@ -147,14 +156,34 @@ restore the pre-deploy state, use the latest `${DEPLOY_PATH}/backups/predeploy-*
 
 ## 9. Restore from backup
 
+The rollout writes an **uncompressed** plain-SQL dump (`predeploy-*.sql`), so
+there is nothing to gunzip. Because a plain `pg_dump` emits `CREATE TABLE`
+without a matching `DROP`, restore into a **clean** database:
+
 ```bash
 cd /opt/docmind
-gunzip -c backups/predeploy-YYYYMMDDTHHMMSSZ.sql | \
-  docker compose -f docker-compose.prod.yml exec -T db \
-  psql -U "$POSTGRES_USER" "$POSTGRES_DB"
+set -a; . ./.env; set +a
+BACKUP=backups/predeploy-YYYYMMDDTHHMMSSZ.sql
+
+# Stop writers so nothing changes mid-restore.
+docker compose -f docker-compose.prod.yml stop api worker
+
+# Recreate the database, then replay the dump.
+docker compose -f docker-compose.prod.yml exec -T db \
+  sh -c 'psql -U "$POSTGRES_USER" -d postgres -c "DROP DATABASE IF EXISTS \"$POSTGRES_DB\" WITH (FORCE);"'
+docker compose -f docker-compose.prod.yml exec -T db \
+  sh -c 'psql -U "$POSTGRES_USER" -d postgres -c "CREATE DATABASE \"$POSTGRES_DB\";"'
+docker compose -f docker-compose.prod.yml exec -T db \
+  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < "$BACKUP"
+
+docker compose -f docker-compose.prod.yml up -d --no-build api worker
+curl -fsS http://127.0.0.1:8000/health
 ```
 
-`docker-compose.prod.yml exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' > backup.sql` is the exact inverse.
+`docker compose -f docker-compose.prod.yml exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' > backup.sql`
+is the exact inverse. The same procedure applies to the demo contour with
+`docker-compose.demo.yml`, `.env.demo` and `backups-demo/`; a full walkthrough is
+in [`docs/RUNBOOK.md`](RUNBOOK.md).
 
 ## 10. Operations checklist
 
@@ -166,3 +195,22 @@ gunzip -c backups/predeploy-YYYYMMDDTHHMMSSZ.sql | \
 - **Upgrades:** dependabot (pip / actions / docker) plus the weekly Trivy scan.
 - **DB pool:** tune `DB_POOL_SIZE`/`DB_MAX_OVERFLOW` so
   `(API workers + 1) * (pool + overflow)` stays under PostgreSQL `max_connections`.
+
+## 11. Public demo contour (optional)
+
+To show "[...] how it works [...]" on a marketing site, deploy a **second,
+isolated** stack rather than exposing production: its own Compose project
+(`name: docmind-demo`), its own database, its own `API_KEY` and its own rate and
+spend limits. Uploads are disabled in the UI and the corpus is seeded from files
+you chose.
+
+- Compose file: [`docker-compose.demo.yml`](../docker-compose.demo.yml)
+- Workflows: [`release-demo-image.yml`](../.github/workflows/release-demo-image.yml)
+  (a Streamlit image, built separately so its CVEs cannot block production) and
+  [`deploy-demo.yml`](../.github/workflows/deploy-demo.yml) (same rollout script,
+  different `COMPOSE_FILE`, `ENV_FILE`, `DEPLOY_PATH` and `TRAFFIC_SERVICES`)
+- Caddy vhost: the `demo.<domain>` block in
+  [`deploy/caddy/Caddyfile.example`](../deploy/caddy/Caddyfile.example)
+
+Full walkthrough — server layout, `.env.demo`, seeding, iframe embed, budget
+guardrails and isolation checks — is in [`docs/DEMO.md`](DEMO.md).
