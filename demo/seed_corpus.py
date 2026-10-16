@@ -57,9 +57,7 @@ def auth_headers() -> dict[str, str]:
 
 def list_documents() -> list[dict]:
     """Return every document currently stored in the demo API."""
-    response = requests.get(
-        f"{API_URL}/documents", headers=auth_headers(), timeout=REQUEST_TIMEOUT
-    )
+    response = requests.get(f"{API_URL}/documents", headers=auth_headers(), timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     return response.json()
 

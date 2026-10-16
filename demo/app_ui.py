@@ -179,9 +179,7 @@ with tab_docs:
         )
         try:
             documents = [
-                document
-                for document in _fetch_documents()
-                if document.get("chunk_count", 0) > 0
+                document for document in _fetch_documents() if document.get("chunk_count", 0) > 0
             ]
         except requests.RequestException as exc:
             documents = []
@@ -285,8 +283,7 @@ st.sidebar.markdown("### System Info")
 st.sidebar.info("Backend: FastAPI\nDatabase: pgvector\nWorker: Arq")
 if DEMO_MODE:
     st.sidebar.caption(
-        "Public demo on an isolated stack: documents are pre-seeded and uploads "
-        "are disabled."
+        "Public demo on an isolated stack: documents are pre-seeded and uploads are disabled."
     )
 elif SWAGGER_URL:
     st.sidebar.caption(f"API docs: [{SWAGGER_URL}]({SWAGGER_URL})")
