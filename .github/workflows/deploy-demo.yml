@@ -1,0 +1,143 @@
+name: Deploy Demo
+
+# Deploys the public demo contour: an isolated Compose project
+# (docker-compose.demo.yml, `name: docmind-demo`) living beside production on the
+# same VPS.
+#
+# Unlike the production deploy this one is NOT approval-gated. The demo holds no
+# customer data, is rebuilt from scratch by the seed step, and can be rebuilt at
+# will; requiring a reviewer would only slow down cosmetic changes. It still uses
+# its own GitHub environment (`demo`) so it can carry separate secrets — and,
+# critically, a separate DEPLOY_PATH and env file, because the demo owns its own
+# database and its own API key.
+on:
+  workflow_run:
+    workflows: ["Release Demo Image"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (e.g. sha-<full-sha>)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-demo
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy demo to VPS
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    env:
+      HAS_SSH_HOST: ${{ secrets.SSH_HOST != '' }}
+    environment:
+      name: demo
+      url: ${{ vars.DEMO_URL }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve image tag
+        id: image
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_TAG: ${{ inputs.image_tag }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            tag="${DISPATCH_TAG}"
+          else
+            tag="sha-${HEAD_SHA}"
+          fi
+          if [ -z "${tag}" ]; then
+            echo "Unable to resolve an image tag." >&2
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Resolved image tag: ${tag}"
+
+      - name: Fail when the VPS is not configured
+        if: ${{ env.HAS_SSH_HOST != 'true' }}
+        run: |
+          echo "::error::SSH_HOST is not configured for the 'demo' environment. Set the demo deployment secrets before running this workflow."
+          exit 1
+
+      - name: Resolve lowercase image references
+        id: registry
+        run: |
+          # The demo stack runs two images built from the same commit: the
+          # API/worker image (the same one production uses) and the Streamlit UI
+          # image. GHCR paths must be lowercase.
+          base="$(printf '%s' 'ghcr.io/${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          echo "api=${base}" >> "$GITHUB_OUTPUT"
+          echo "ui=${base}-demo" >> "$GITHUB_OUTPUT"
+
+      - name: Copy deployment assets to the server
+        if: ${{ env.HAS_SSH_HOST == 'true' }}
+        uses: appleboy/scp-action@v1.0.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: "docker-compose.demo.yml,.github/deploy/remote-deploy.sh"
+          target: ${{ secrets.DEPLOY_PATH }}
+          overwrite: true
+          rm: false
+
+      - name: Run remote deployment
+        id: deploy
+        if: ${{ env.HAS_SSH_HOST == 'true' }}
+        uses: appleboy/ssh-action@v1.2.5
+        env:
+          GHCR_USER: ${{ secrets.GHCR_USER }}
+          GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          DOCMIND_IMAGE: ${{ steps.registry.outputs.api }}
+          DOCMIND_DEMO_IMAGE: ${{ steps.registry.outputs.ui }}
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: GHCR_USER,GHCR_TOKEN,DOCMIND_IMAGE,DOCMIND_DEMO_IMAGE,IMAGE_TAG,DEPLOY_PATH
+          command_timeout: 30m
+          script: |
+            set -euo pipefail
+            cd "${DEPLOY_PATH}"
+            # The demo contour reuses the production rollout script, retargeted
+            # at its own Compose file, env file, state file, backups directory,
+            # health endpoint and service list. Nothing below may point at the
+            # production stack: DOCMIND_IMAGE_REF is resolved per contour and the
+            # Compose project name comes from the file itself.
+            export COMPOSE_FILE=docker-compose.demo.yml
+            export ENV_FILE=.env.demo
+            export STATE_FILE=.deployed_demo_image_tag
+            export BACKUP_DIR=backups-demo
+            export HEALTH_URL=http://localhost:8001/health
+            export TRAFFIC_SERVICES="api worker demo"
+            # The seed step runs only after the stack is healthy. It is
+            # idempotent (already-indexed documents are skipped) and exits
+            # non-zero if indexing fails, so a broken corpus fails the rollout
+            # instead of silently publishing an empty demo.
+            export POST_DEPLOY_CMD="docker compose -f docker-compose.demo.yml --profile seed run --rm demo-seed"
+            bash .github/deploy/remote-deploy.sh
+
+      - name: Deployment summary
+        if: always() && steps.deploy.outcome != 'skipped'
+        run: |
+          {
+            echo "### Demo deployment"
+            echo ""
+            echo "- **UI image:** \`${{ steps.registry.outputs.ui }}:${{ steps.image.outputs.tag }}\`"
+            echo "- **API image:** \`${{ steps.registry.outputs.api }}:${{ steps.image.outputs.tag }}\`"
+            echo "- **Result:** ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"
