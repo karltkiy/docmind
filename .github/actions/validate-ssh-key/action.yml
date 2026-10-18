@@ -28,6 +28,12 @@ runs:
         SSH_KEY_MATERIAL: ${{ inputs.key }}
         KEY_LABEL: ${{ inputs.label }}
       run: |
+        # GitHub wraps `run` in `bash --noprofile --norc -e -o pipefail`, and a
+        # later `set -u` does not undo that `-e`. Every probe below is expected
+        # to fail when the key is bad, so errexit must be switched off first -
+        # otherwise the step dies on the first non-zero ssh-keygen (exit 255)
+        # and the job fails, defeating the "never fail the job" contract.
+        set +e
         set -uo pipefail
 
         echo "### SSH key diagnostics (${KEY_LABEL})"
@@ -106,18 +112,23 @@ runs:
         # This is the check that reproduces the drone-scp failure
         # "ssh.ParsePrivateKey: ssh: this private key is passphrase protected".
         parse_err="$(ssh-keygen -y -P '' -f "${key_file}" 2>&1 >/dev/null)"
+        parse_rc=$?
         case "${parse_err}" in
           '')
-            echo "- ssh-keygen loads the key without a passphrase: OK"
+            if [ "${parse_rc}" -eq 0 ]; then
+              echo "- ssh-keygen loads the key without a passphrase: OK"
+            else
+              echo "::warning::${KEY_LABEL}: ssh-keygen exited ${parse_rc} without a message"
+            fi
             ;;
           *'incorrect passphrase'*|*'passphrase protected'*)
-            echo "::error::${KEY_LABEL}: key is passphrase-protected - appleboy actions cannot use it without a passphrase input; replace it with an unencrypted deploy key"
+            echo "::error::${KEY_LABEL}: key is passphrase-protected (ssh-keygen exit ${parse_rc}) - appleboy actions cannot use it without a passphrase input; replace it with an unencrypted deploy key"
             ;;
           *'invalid format'*|*'error in libcrypto'*|*'bad base64'*)
-            echo "::error::${KEY_LABEL}: key material is corrupt - ${parse_err}"
+            echo "::error::${KEY_LABEL}: key material is corrupt (ssh-keygen exit ${parse_rc}) - ${parse_err}"
             ;;
           *)
-            echo "::warning::${KEY_LABEL}: ssh-keygen could not load the key - ${parse_err}"
+            echo "::warning::${KEY_LABEL}: ssh-keygen could not load the key (exit ${parse_rc}) - ${parse_err}"
             ;;
         esac
 
