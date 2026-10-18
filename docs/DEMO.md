@@ -51,7 +51,7 @@ sudo chown -R "$USER" /opt/docmind-demo
 | `corpus/` | The demo documents, mounted read-only into the seed service |
 | `backups-demo/` | Pre-deploy `pg_dump` files (the same backup-before-migrate rule as production) |
 | `.deployed_demo_image_tag` | State file used for rollback |
-| `docker-compose.demo.yml`, `.github/deploy/remote-deploy.sh` | Copied by the workflow on every run |
+| `docker-compose.demo.yml`, `.github/deploy/remote-deploy.sh`, `.github/deploy/stack.sh` | Copied by the workflow on every run (`stack.sh` resolves `.deployed_image_ref` for manual commands) |
 
 ### `.env.demo`
 
@@ -136,12 +136,23 @@ server. An unencrypted deploy key is simpler and needs no extra secret.
    - waits for `http://localhost:8001/health`;
    - runs the seed hook (`POST_DEPLOY_CMD`) and only then records the state file.
 
-Manual equivalent on the server:
+Manual equivalent on the server — use the deployed wrapper, which resolves the
+digest-pinned references from `.deployed_image_ref` and adds `--env-file` for
+you:
 
 ```bash
 cd /opt/docmind-demo
-export DOCMIND_IMAGE_REF=ghcr.io/<owner>/<repo>@sha256:<api-digest> \
-       DOCMIND_DEMO_IMAGE_REF=ghcr.io/<owner>/<repo>-demo@sha256:<ui-digest>
+bash .github/deploy/stack.sh ps
+bash .github/deploy/stack.sh logs --tail=50 api worker demo
+bash .github/deploy/stack.sh --profile seed run --rm demo-seed
+```
+
+Without the wrapper the same rollout looks like this (the references come from
+`.deployed_image_ref`, never from `.env.demo`):
+
+```bash
+cd /opt/docmind-demo
+set -a; . ./.deployed_image_ref; set +a
 docker compose -f docker-compose.demo.yml --env-file .env.demo up -d --no-build
 docker compose -f docker-compose.demo.yml --env-file .env.demo \
   --profile seed run --rm demo-seed

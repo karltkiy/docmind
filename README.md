@@ -431,6 +431,7 @@ docmind/
 │   ├── CODEOWNERS                   # Review ownership
 │   ├── dependabot.yml               # Weekly pip / actions / docker updates
 │   ├── deploy/remote-deploy.sh      # VPS rollout + rollback logic
+│   ├── deploy/stack.sh              # Manual `docker compose` wrapper (loads .deployed_image_ref)
 │   └── workflows/                   # ci · security · dependency-review · release-image · deploy
 ├── deploy/
 │   └── nginx/docmind.conf.example   # SSE-aware reverse-proxy sample

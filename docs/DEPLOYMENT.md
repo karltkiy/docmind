@@ -19,9 +19,10 @@ and the automated rollout ([`.github/deploy/remote-deploy.sh`](../.github/deploy
 
 ## 2. Repository location on the server
 
-The deploy workflow copies `docker-compose.prod.yml` and
-`.github/deploy/remote-deploy.sh` into `DEPLOY_PATH` on every run, so the server
-only needs the directory to exist:
+The deploy workflow copies `docker-compose.prod.yml`,
+`.github/deploy/remote-deploy.sh` and the manual-command wrapper
+`.github/deploy/stack.sh` into `DEPLOY_PATH` on every run, so the server only
+needs the directory to exist:
 
 ```bash
 sudo mkdir -p /opt/docmind && sudo chown "$USER" /opt/docmind

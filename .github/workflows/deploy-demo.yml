@@ -101,7 +101,7 @@ jobs:
           # an empty secret is fine for an unencrypted deploy key.
           passphrase: ${{ secrets.SSH_PASSPHRASE }}
           port: ${{ secrets.SSH_PORT || 22 }}
-          source: "docker-compose.demo.yml,.github/deploy/remote-deploy.sh"
+          source: "docker-compose.demo.yml,.github/deploy/remote-deploy.sh,.github/deploy/stack.sh"
           target: ${{ secrets.DEPLOY_PATH }}
           overwrite: true
           rm: false

@@ -1359,13 +1359,38 @@ error while interpolating services.api.image: required variable DOCMIND_IMAGE_RE
 is missing a value: set DOCMIND_IMAGE_REF to repo@sha256:<digest>
 ```
 
-Поэтому рядом с `.deployed_image_tag` rollout пишет второй файл состояния,
-пригодный для подключения как shell:
+Поэтому rollout пишет рядом файлы состояния, пригодные для подключения как
+shell:
 
 | Файл | Содержимое |
 | --- | --- |
-| `.deployed_image_tag` | тег последнего успешного деплоя |
+| `.deployed_image_tag` | тег последнего успешного прод-деплоя |
+| `.deployed_demo_image_tag` | тег последнего успешного демо-деплоя (`STATE_FILE` демо-контура) |
 | `.deployed_image_ref` | `DOCMIND_IMAGE_REF=repo@sha256:…`; в демо ещё `DOCMIND_DEMO_IMAGE_REF` |
+
+Ручные команды выполняются через обёртку `.github/deploy/stack.sh`, которую
+rollout копирует в каталог контура вместе с Compose-файлом. Она подхватывает
+`.deployed_image_ref`, сама добавляет `--env-file .env.demo` в демо-контуре и
+передаёт остальные аргументы в `docker compose`:
+
+```bash
+cd /opt/docmind
+bash .github/deploy/stack.sh ps
+bash .github/deploy/stack.sh logs --tail=50 api worker
+bash .github/deploy/stack.sh config --quiet
+```
+
+Демо-контур — то же самое из `/opt/docmind-demo` (обёртка определяет контур по
+Compose-файлу, а не по имени каталога):
+
+```bash
+cd /opt/docmind-demo
+bash .github/deploy/stack.sh ps
+bash .github/deploy/stack.sh --profile seed run --rm demo-seed
+```
+
+Если обёртки на сервере ещё нет (деплой был до её появления), сделайте то же
+вручную:
 
 ```bash
 cd /opt/docmind
