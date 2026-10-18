@@ -472,8 +472,14 @@ workflow, так что сверять можно прямо по логу Actio
 - classic: scope `read:packages`;
 - или fine-grained: доступ к Packages (read).
 
-`GHCR_USER` — ваш GitHub-логин, `GHCR_PULL_TOKEN` — сам токен. На VPS он
-используется только для `docker login ghcr.io` и `docker pull`.
+`GHCR_USER` — ваш GitHub-логин. Это **не секрет**: он виден в имени репозитория,
+в URL клона и в пути образа `ghcr.io/<login>/docmind`. Поэтому он живёт в
+Variables, а не в Secrets: секретное значение GitHub маскирует во всех строках
+логов, и если логин входит в домен, то `environment.url` не публикуется —
+в конце job появляется `Skip setting environment url … may contain secret`.
+
+`GHCR_PULL_TOKEN` — сам токен; на VPS он используется только для
+`docker login ghcr.io` и `docker pull`.
 
 ## 6.3. Environment `production`
 
@@ -486,7 +492,8 @@ workflow, так что сверять можно прямо по логу Actio
 | Secret | `SSH_PASSPHRASE` | парольная фраза к `SSH_KEY`; **не нужен**, если ключ без пароля |
 | Secret | `SSH_PORT` | `22` (или ваш) |
 | Secret | `DEPLOY_PATH` | `/opt/docmind` |
-| Secret | `GHCR_USER`, `GHCR_PULL_TOKEN` | доступ к приватному образу |
+| Variable | `GHCR_USER` | логин GitHub; **не** секрет (см. 6.2) |
+| Secret | `GHCR_PULL_TOKEN` | доступ к приватному образу |
 | Variable | `PRODUCTION_URL` | `https://api.<domain>` |
 
 ## 6.4. Environment `demo`
@@ -497,7 +504,8 @@ workflow, так что сверять можно прямо по логу Actio
 | Secret | `SSH_HOST`, `SSH_USER`, `SSH_KEY`, `SSH_PORT` | те же доступы |
 | Secret | `SSH_PASSPHRASE` | фраза от **демо**-ключа; секреты контуров не переиспользуются |
 | Secret | `DEPLOY_PATH` | `/opt/docmind-demo` |
-| Secret | `GHCR_USER`, `GHCR_PULL_TOKEN` | те же |
+| Variable | `GHCR_USER` | тот же логин |
+| Secret | `GHCR_PULL_TOKEN` | тот же токен |
 | Variable | `DEMO_URL` | `https://demo.<domain>` |
 
 > Если `SSH_HOST` не задан, job падает с явной ошибкой, а не пропускает деплой

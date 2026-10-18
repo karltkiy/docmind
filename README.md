@@ -375,7 +375,8 @@ pre-seeded corpus. See [`docs/DEMO.md`](docs/DEMO.md).
 | --- | --- | --- |
 | Environment | `production` | Required reviewers (manual approval gate) |
 | Secret | `SSH_HOST`, `SSH_USER`, `SSH_KEY`, `SSH_PORT`, `DEPLOY_PATH` | VPS access + repo location |
-| Secret | `GHCR_USER`, `GHCR_PULL_TOKEN` | Pull the private image on the VPS |
+| Variable | `GHCR_USER` | Registry username; public, so it must **not** be a secret |
+| Secret | `GHCR_PULL_TOKEN` | Pull the private image on the VPS |
 | Variable | `PRODUCTION_URL` | Environment link shown in the Actions UI |
 | Environment | `demo` (optional) | Public demo contour; no required reviewers |
 | Secret | `DEPLOY_PATH` under `demo` (optional) | Must point at a **different** directory than production |

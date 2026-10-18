@@ -103,7 +103,8 @@ because it has **no required reviewers**, does not gate on manual approval.
 | Secret | `SSH_HOST`, `SSH_USER`, `SSH_KEY`, `SSH_PORT` | Same VPS access |
 | Secret | `SSH_PASSPHRASE` | Passphrase of the demo `SSH_KEY`; leave unset when the key is unencrypted |
 | Secret | `DEPLOY_PATH` | `/opt/docmind-demo` — **must differ from production** |
-| Secret | `GHCR_USER`, `GHCR_PULL_TOKEN` | Registry access |
+| Variable | `GHCR_USER` | Registry username; public, so it must **not** be a secret |
+| Secret | `GHCR_PULL_TOKEN` | Registry access |
 | Variable | `DEMO_URL` | Public demo URL shown in the Actions UI |
 
 `DEPLOY_PATH` is the one value that could silently damage production if it were
