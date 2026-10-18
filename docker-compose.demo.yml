@@ -19,15 +19,23 @@
 # separate public demo therefore needs its own database, its own credentials and
 # its own api/worker pair.
 #
-# Usage (see .github/deploy/remote-deploy.sh for the automated rollout):
+# Usage (see .github/deploy/remote-deploy.sh for the automated rollout).
+#
+# --env-file .env.demo is NOT optional on the command line: the `env_file:`
+# entries below only fill the container environment and are applied after
+# interpolation, so without the flag every ${VAR:?...} in this file fails with
+# "required variable ... is missing a value" - and a file named `.env` is the
+# only one Compose loads on its own.
 #
 #   DOCMIND_IMAGE_REF=ghcr.io/owner/docmind@sha256:<digest> \
 #   DOCMIND_DEMO_IMAGE_REF=ghcr.io/owner/docmind-demo@sha256:<digest> \
-#     docker compose -f docker-compose.demo.yml up -d --no-build
+#     docker compose -f docker-compose.demo.yml --env-file .env.demo \
+#       up -d --no-build
 #
 # The seed corpus is pulled in on demand, never on every start:
 #
-#   docker compose -f docker-compose.demo.yml --profile seed run --rm demo-seed
+#   docker compose -f docker-compose.demo.yml --env-file .env.demo \
+#     --profile seed run --rm demo-seed
 # ---------------------------------------------------------------------------
 name: docmind-demo
 

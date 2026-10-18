@@ -142,9 +142,20 @@ Manual equivalent on the server:
 cd /opt/docmind-demo
 export DOCMIND_IMAGE_REF=ghcr.io/<owner>/<repo>@sha256:<api-digest> \
        DOCMIND_DEMO_IMAGE_REF=ghcr.io/<owner>/<repo>-demo@sha256:<ui-digest>
-docker compose -f docker-compose.demo.yml up -d --no-build
-docker compose -f docker-compose.demo.yml --profile seed run --rm demo-seed
+docker compose -f docker-compose.demo.yml --env-file .env.demo up -d --no-build
+docker compose -f docker-compose.demo.yml --env-file .env.demo \
+  --profile seed run --rm demo-seed
 ```
+
+`--env-file .env.demo` is mandatory on **every** `docker compose` call against
+this file. The `env_file:` entries in [`docker-compose.demo.yml`](../docker-compose.demo.yml)
+only populate the container environment, and they are applied *after*
+interpolation; `${POSTGRES_PASSWORD:?…}`, `${API_KEY:?…}` and the rest are
+resolved from the process environment, a `--env-file`, or a file literally named
+`.env` in the project directory. Because this contour's file is `.env.demo`, the
+flag is the only thing that satisfies them — omitting it produces one
+`required variable … is missing a value` error per service. The rollout script
+passes it for you (`.github/deploy/remote-deploy.sh`, `compose()`).
 
 ## 6. The demo corpus
 
@@ -159,7 +170,8 @@ Supported suffixes: `.txt`, `.md`, `.csv`, `.json`, `.pdf`
 `/opt/docmind-demo/corpus` and re-run the seed service after adding more:
 
 ```bash
-docker compose -f docker-compose.demo.yml --profile seed run --rm demo-seed
+docker compose -f docker-compose.demo.yml --env-file .env.demo \
+  --profile seed run --rm demo-seed
 ```
 
 If a document is stuck in the `failed` state, the script stops rather than
@@ -173,7 +185,7 @@ curl -X DELETE -H "X-API-Key: $DEMO_API_KEY" \
 To start from a clean slate (drops the demo database and the seeded corpus):
 
 ```bash
-docker compose -f docker-compose.demo.yml down
+docker compose -f docker-compose.demo.yml --env-file .env.demo down
 docker volume rm docmind-demo_demo_pg_data docmind-demo_demo_uploads
 # next deploy re-creates the schema and re-seeds the corpus
 ```
@@ -269,10 +281,10 @@ curl -sS -o /dev/null -w '%{http_code}\n' \
 
 # Separate projects: neither stack can see the other's containers.
 docker compose -f /opt/docmind/docker-compose.prod.yml ps
-docker compose -f /opt/docmind-demo/docker-compose.demo.yml ps
+docker compose -f /opt/docmind-demo/docker-compose.demo.yml --env-file /opt/docmind-demo/.env.demo ps
 
 # The demo database is not the production one.
-docker compose -f /opt/docmind-demo/docker-compose.demo.yml exec db \
+docker compose -f /opt/docmind-demo/docker-compose.demo.yml --env-file /opt/docmind-demo/.env.demo exec db \
   psql -U "$POSTGRES_USER" -c '\dt' | head
 ```
 
@@ -280,6 +292,7 @@ docker compose -f /opt/docmind-demo/docker-compose.demo.yml exec db \
 
 | Symptom | Likely cause |
 | --- | --- |
+| `required variable … is missing a value` for `API_KEY`, `POSTGRES_*`, `REDIS_PASSWORD`, `EMBEDDING_DIM`, `CORS_ORIGINS`, `DOCMIND_PUBLIC_API_URL` | `docker compose` was called without `--env-file .env.demo`: Compose does not read `.env.demo` on its own and `env_file:` is applied only after interpolation |
 | Demo page shows "corpus is still empty" | The seed step never ran, or the corpus directory is empty; run `--profile seed run --rm demo-seed` and read its output |
 | Seed exits with `FATAL: ... rate limited` | `UPLOAD_RATE_LIMIT_REQUESTS` is too low for the corpus size; the script retries using `Retry-After`, so raise the limit or accept the wait |
 | Every visitor shares one rate limit | `FORWARDED_ALLOW_IPS` does not cover the Docker gateway, so uvicorn ignores `X-Forwarded-For` |
