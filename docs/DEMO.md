@@ -101,6 +101,7 @@ because it has **no required reviewers**, does not gate on manual approval.
 | --- | --- | --- |
 | Environment | `demo` | No required reviewers |
 | Secret | `SSH_HOST`, `SSH_USER`, `SSH_KEY`, `SSH_PORT` | Same VPS access |
+| Secret | `SSH_PASSPHRASE` | Passphrase of the demo `SSH_KEY`; leave unset when the key is unencrypted |
 | Secret | `DEPLOY_PATH` | `/opt/docmind-demo` — **must differ from production** |
 | Secret | `GHCR_USER`, `GHCR_PULL_TOKEN` | Registry access |
 | Variable | `DEMO_URL` | Public demo URL shown in the Actions UI |
@@ -108,6 +109,14 @@ because it has **no required reviewers**, does not gate on manual approval.
 `DEPLOY_PATH` is the one value that could silently damage production if it were
 wrong: pointing the demo environment at `/opt/docmind` would make the demo
 rollout rewrite files that the production rollout owns.
+
+`SSH_PASSPHRASE` only exists for keys created **with** a passphrase; both
+`appleboy/scp-action` and `appleboy/ssh-action` receive it through their
+`passphrase` input. Without it drone-scp reports
+`ssh: this private key is passphrase protected` followed by
+`ssh: unable to authenticate, attempted methods [none]` — the empty method list
+means the key was never loaded, so the fault is the missing passphrase, not the
+server. An unencrypted deploy key is simpler and needs no extra secret.
 
 ## 5. Release and deploy flow
 

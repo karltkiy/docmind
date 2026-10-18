@@ -117,6 +117,10 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     <<: *hardening-strict
+    # Same reason as in docker-compose.prod.yml: /data belongs to redis:redis
+    # (uid 999 / gid 1000) inside the image, and cap_drop: ALL leaves a root
+    # process without CAP_DAC_OVERRIDE, so the AOF directory cannot be created.
+    user: "999:1000"
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in the server-side .env.demo}
       REDISCLI_AUTH: ${REDIS_PASSWORD:?set REDIS_PASSWORD in the server-side .env.demo}

@@ -1,0 +1,174 @@
+name: Validate SSH deploy key
+description: >-
+  Prints non-secret diagnostics for the SSH_KEY secret before appleboy/scp-action
+  and appleboy/ssh-action consume it. Only structural facts (byte length, line
+  count, PEM type, parse result, a truncated hash of the material), the derived
+  *public* key and its fingerprint reach the log - the private key never does.
+
+  The step never fails the job: it annotates the log with ::error:: / ::warning::
+  and exits 0, so the deploy steps stay the single gate for a rollout. It exists
+  because drone-scp reports "ssh: this private key is passphrase protected" ->
+  "attempted methods [none]" with no hint about which of the two causes applies:
+  a missing SSH_PASSPHRASE or damaged key material.
+
+inputs:
+  key:
+    description: "Private key material, i.e. the SSH_KEY secret."
+    required: true
+  passphrase:
+    description: >-
+      Passphrase for the private key, i.e. the SSH_PASSPHRASE secret. Leave
+      empty when the key is unencrypted.
+    required: false
+    default: ""
+  label:
+    description: "Contour name used in log annotations (production, demo)."
+    required: false
+    default: deploy
+
+runs:
+  using: composite
+  steps:
+    - name: Inspect SSH key material
+      shell: bash
+      env:
+        SSH_KEY_MATERIAL: ${{ inputs.key }}
+        SSH_KEY_PASSPHRASE: ${{ inputs.passphrase }}
+        KEY_LABEL: ${{ inputs.label }}
+      run: |
+        # GitHub wraps `run` in `bash --noprofile --norc -e -o pipefail`, and a
+        # later `set -u` does not undo that `-e`. Every probe below is expected
+        # to fail when the key is bad, so errexit must be switched off first -
+        # otherwise the step dies on the first non-zero ssh-keygen (exit 255)
+        # and the job fails, defeating the "never fail the job" contract.
+        set +e
+        set -uo pipefail
+
+        echo "### SSH key diagnostics (${KEY_LABEL})"
+        echo ""
+
+        key_file="$(mktemp "${RUNNER_TEMP:-/tmp}/docmind-ssh-key.XXXXXX")"
+        # The runner is ephemeral, but never leave key material on disk anyway.
+        trap 'rm -f "${key_file}"' EXIT
+        printf '%s\n' "${SSH_KEY_MATERIAL:-}" > "${key_file}"
+        chmod 600 "${key_file}"
+
+        # --- 1. Structural facts -------------------------------------------
+        bytes="$(wc -c < "${key_file}" | tr -d ' ')"
+        lines="$(awk 'END { print NR }' "${key_file}")"
+        key_id="$(printf '%s' "${SSH_KEY_MATERIAL:-}" | tr -d '\r' | sha256sum | cut -c1-16)"
+        echo "- secret length: ${bytes} bytes over ${lines} line(s)"
+        echo "- material sha256 (first 16 hex, not the key): ${key_id}"
+        if [ "${bytes}" -le 1 ]; then
+          echo "::error::${KEY_LABEL}: SSH_KEY is empty - the secret is not set on this environment"
+        fi
+
+        # --- 2. Paste damage -----------------------------------------------
+        if grep -q $'\r' "${key_file}"; then
+          echo "::warning::${KEY_LABEL}: key contains CR (\\r) - pasted from Windows; store the secret with Unix line endings"
+        else
+          echo "- line endings: no CR characters"
+        fi
+        if grep -qF '\n' "${key_file}"; then
+          echo "::warning::${KEY_LABEL}: key contains a literal backslash-n sequence - newlines were escaped instead of embedded"
+        fi
+        if [ "${lines}" -le 2 ]; then
+          echo "::warning::${KEY_LABEL}: only ${lines} line(s) - an OpenSSH key body is 3+ lines, the value looks collapsed"
+        fi
+
+        # --- 3. PEM envelope ------------------------------------------------
+        first_line="$(head -n 1 "${key_file}")"
+        last_line="$(awk 'NF { line = $0 } END { print line }' "${key_file}")"
+        # Only the envelope line is ever echoed, never the body: a key pasted
+        # through a shell or a YAML value can collapse onto a single line, and
+        # printing that line whole would leak the base64 payload of the key.
+        first_head="$(printf '%s' "${first_line}" | sed -E 's/^(-----BEGIN [A-Z0-9 ]{1,40}-----).*/\1/')"
+        case "${first_line}" in
+          '-----BEGIN'*)
+            if [ "${#first_head}" -le 48 ]; then
+              echo "- first line: ${first_head} (line length: ${#first_line})"
+            else
+              echo "- first line: begins with '-----BEGIN' but is ${#first_line} chars - the key is collapsed onto one line"
+            fi
+            ;;
+          *) echo "::error::${KEY_LABEL}: first line is not a PEM header (${#first_line} chars) - the secret is not a raw private key file" ;;
+        esac
+        case "${last_line}" in
+          '-----END'*) echo "- last line: ${last_line}" ;;
+          *) echo "::error::${KEY_LABEL}: last line is not a PEM footer (${#last_line} chars) - the value is truncated or has trailing junk" ;;
+        esac
+
+        pem_type="none"
+        grep -q 'BEGIN OPENSSH PRIVATE KEY' "${key_file}" && pem_type="openssh"
+        grep -q 'BEGIN RSA PRIVATE KEY'     "${key_file}" && pem_type="rsa (PKCS#1)"
+        grep -q 'BEGIN EC PRIVATE KEY'      "${key_file}" && pem_type="ec"
+        grep -q 'BEGIN PRIVATE KEY'         "${key_file}" && pem_type="pkcs#8"
+        grep -q 'PuTTY-User-Key-File'       "${key_file}" && pem_type="putty-ppk"
+        echo "- PEM type: ${pem_type}"
+        case "${pem_type}" in
+          none) echo "::error::${KEY_LABEL}: no PEM envelope found - check that the secret holds the private key and not the .pub file" ;;
+          putty-ppk) echo "::error::${KEY_LABEL}: PuTTY .ppk is unsupported - convert with 'puttygen key.ppk -O private-openssh -o id_ed25519'" ;;
+        esac
+
+        # Body lines must be plain base64; wrapping or indentation breaks parsing.
+        body_junk="$(awk 'NR > 1 && $0 !~ /^-----END/ && NF && $0 !~ /^[A-Za-z0-9+\/=]+$/' "${key_file}" | wc -l | tr -d ' ')"
+        if [ "${body_junk}" -gt 0 ]; then
+          echo "::warning::${KEY_LABEL}: ${body_junk} body line(s) contain characters outside base64 (spaces, quotes or indentation from copy-paste)"
+        fi
+
+        # --- 4. Parse test --------------------------------------------------
+        # This is the check that reproduces the drone-scp failure
+        # "ssh.ParsePrivateKey: ssh: this private key is passphrase protected".
+        # SSH_PASSPHRASE is used when present, so an encrypted key is a valid
+        # configuration instead of an error: appleboy actions accept the same
+        # passphrase through their `passphrase` input.
+        parse_err_file="${key_file}.err"
+        pub="$(ssh-keygen -y -P "${SSH_KEY_PASSPHRASE:-}" -f "${key_file}" 2>"${parse_err_file}")"
+        parse_rc=$?
+        parse_err="$(cat "${parse_err_file}" 2>/dev/null)"
+        rm -f "${parse_err_file}"
+        if [ "${parse_rc}" -eq 0 ]; then
+          if [ -n "${SSH_KEY_PASSPHRASE:-}" ]; then
+            echo "- ssh-keygen accepts the key with SSH_PASSPHRASE: OK"
+          else
+            echo "- ssh-keygen loads the key without a passphrase: OK"
+          fi
+        else
+          case "${parse_err}" in
+            *'incorrect passphrase'*|*'passphrase protected'*|*'decrypt'*)
+              if [ -n "${SSH_KEY_PASSPHRASE:-}" ]; then
+                echo "::error::${KEY_LABEL}: SSH_PASSPHRASE does not decrypt SSH_KEY (ssh-keygen exit ${parse_rc}) - the secret holds a different passphrase than the key was created with"
+              else
+                echo "::error::${KEY_LABEL}: key is passphrase-protected (ssh-keygen exit ${parse_rc}) and SSH_PASSPHRASE is empty - set that secret on this environment, or use an unencrypted deploy key"
+              fi
+              ;;
+            *'invalid format'*|*'error in libcrypto'*|*'bad base64'*)
+              echo "::error::${KEY_LABEL}: key material is corrupt (ssh-keygen exit ${parse_rc}) - ${parse_err}"
+              ;;
+            *)
+              echo "::warning::${KEY_LABEL}: ssh-keygen could not load the key (exit ${parse_rc}) - ${parse_err}"
+              ;;
+          esac
+        fi
+
+        # --- 5. Public half, to diff against the server ---------------------
+        if [ "${parse_rc}" -eq 0 ] && [ -n "${pub}" ]; then
+          echo ""
+          echo "Derived public key (public data - compare it with \`~/.ssh/authorized_keys\` on the VPS for ${KEY_LABEL}):"
+          echo '```'
+          echo "${pub}"
+          echo '```'
+          # The fingerprint comes from the derived public key: `-lf` on the
+          # private key cannot prompt for a passphrase non-interactively.
+          pub_file="${key_file}.pub.tmp"
+          printf '%s\n' "${pub}" > "${pub_file}"
+          ssh-keygen -lf "${pub_file}" | sed 's/^/fingerprint: /' || true
+          rm -f "${pub_file}"
+        else
+          echo ""
+          echo "No public key could be derived, so this key cannot be matched against \`authorized_keys\` yet."
+        fi
+
+        echo ""
+        echo "Diagnostics are informational; the deploy steps below remain the real gate."
+        exit 0

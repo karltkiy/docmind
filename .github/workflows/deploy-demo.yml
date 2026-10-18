@@ -79,6 +79,17 @@ jobs:
           echo "api=${base}" >> "$GITHUB_OUTPUT"
           echo "ui=${base}-demo" >> "$GITHUB_OUTPUT"
 
+      # Diagnostic probe: reports whether SSH_KEY is a parsable, unencrypted
+      # OpenSSH key and prints its public half. Never fails the job, so the
+      # actual deploy steps below stay the only gate.
+      - name: Validate SSH deploy key
+        if: always()
+        uses: ./.github/actions/validate-ssh-key
+        with:
+          key: ${{ secrets.SSH_KEY }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
+          label: demo
+
       - name: Copy deployment assets to the server
         if: ${{ env.HAS_SSH_HOST == 'true' }}
         uses: appleboy/scp-action@v1.0.0
@@ -86,6 +97,9 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
+          # drone-scp cannot use a passphrase-protected key without this input;
+          # an empty secret is fine for an unencrypted deploy key.
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
           port: ${{ secrets.SSH_PORT || 22 }}
           source: "docker-compose.demo.yml,.github/deploy/remote-deploy.sh"
           target: ${{ secrets.DEPLOY_PATH }}
@@ -107,6 +121,7 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
           port: ${{ secrets.SSH_PORT || 22 }}
           envs: GHCR_USER,GHCR_TOKEN,DOCMIND_IMAGE,DOCMIND_DEMO_IMAGE,IMAGE_TAG,DEPLOY_PATH
           command_timeout: 30m
