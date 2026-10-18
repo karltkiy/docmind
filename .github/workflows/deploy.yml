@@ -105,7 +105,12 @@ jobs:
         if: ${{ env.HAS_SSH_HOST == 'true' }}
         uses: appleboy/ssh-action@v1.2.5
         env:
-          GHCR_USER: ${{ secrets.GHCR_USER }}
+          # The registry username is public - it is part of the image path, the
+          # repository URL and every clone. Keeping it in Secrets made GitHub
+          # mask every occurrence in the logs, including the domain inside
+          # PRODUCTION_URL, so the environment link was skipped with
+          # "may contain secret". The pull token stays a secret.
+          GHCR_USER: ${{ vars.GHCR_USER }}
           GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
           DOCMIND_IMAGE: ${{ steps.registry.outputs.image }}
           IMAGE_TAG: ${{ steps.image.outputs.tag }}

@@ -111,7 +111,8 @@ jobs:
         if: ${{ env.HAS_SSH_HOST == 'true' }}
         uses: appleboy/ssh-action@v1.2.5
         env:
-          GHCR_USER: ${{ secrets.GHCR_USER }}
+          # Public username, not a secret: see deploy.yml for the reasoning.
+          GHCR_USER: ${{ vars.GHCR_USER }}
           GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
           DOCMIND_IMAGE: ${{ steps.registry.outputs.api }}
           DOCMIND_DEMO_IMAGE: ${{ steps.registry.outputs.ui }}

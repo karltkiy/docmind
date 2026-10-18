@@ -78,7 +78,8 @@ Rules enforced at rollout/boot:
 | Environment | `production` | Required reviewers (manual approval gate) |
 | Secret | `SSH_HOST`, `SSH_USER`, `SSH_KEY`, `SSH_PORT`, `DEPLOY_PATH` | VPS access + repo location |
 | Secret | `SSH_PASSPHRASE` | Passphrase for `SSH_KEY` when the key is encrypted; omit otherwise |
-| Secret | `GHCR_USER`, `GHCR_PULL_TOKEN` | Pull the private image on the VPS |
+| Variable | `GHCR_USER` | Registry username; public, so it must **not** be a secret |
+| Secret | `GHCR_PULL_TOKEN` | Pull the private image on the VPS |
 | Variable | `PRODUCTION_URL` | Environment link shown in the Actions UI |
 
 `SSH_PORT` defaults to `22`. If `SSH_HOST` is missing, the deploy job **fails
