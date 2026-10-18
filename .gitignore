@@ -43,3 +43,8 @@ Thumbs.db
 
 # Internal working notes (kept out of the published project surface).
 plans/
+
+# Non-English source of a translated document: kept on the machine that
+# translated it, never published. The English translation keeps the original
+# file name, so links in the repository and the docs keep working.
+docs/*.ru.md

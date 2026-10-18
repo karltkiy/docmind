@@ -267,8 +267,8 @@ should stay uncompressed because woff2 is already compressed.
   allow="clipboard-write"
 ></iframe>
 <p>
-  Устройство не отображает демонстрацию?
-  <a href="https://demo.example.com/" target="_blank" rel="noopener">Откройте её в новой вкладке</a>.
+  Demo not rendering on your device?
+  <a href="https://demo.example.com/" target="_blank" rel="noopener">Open it in a new tab</a>.
 </p>
 ```
 
