@@ -81,6 +81,14 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     <<: *hardening-strict
+    # Run as the image's own unprivileged user (redis, uid 999 / gid 1000). The
+    # image bakes /data as redis:redis and the named volume inherits that owner.
+    # With cap_drop: ALL the container has no CAP_DAC_OVERRIDE, so a root
+    # process is just an "other" user for that directory and redis dies on
+    # "Can't open or create append-only dir appendonlydir: Permission denied",
+    # crash-looping until the healthcheck reports it as unhealthy. Dropping to
+    # the owning user fixes the write instead of widening the capabilities.
+    user: "999:1000"
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in the server-side .env}
       # Lets the healthcheck's redis-cli authenticate without leaking the
