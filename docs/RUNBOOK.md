@@ -1,54 +1,55 @@
-# DocMind — полный runbook: от пустого VPS до публичного демо
+# DocMind — complete runbook: from an empty VPS to a public demo
 
-Единый пошаговый сценарий развёртывания **продакшен-API** и **публичной
-демонстрации** на одном VPS, включая укрепление сервера, DNS, секреты,
-GitHub, TLS, бюджет, мониторинг, бэкапы, откат и день-2-операции.
+A single step-by-step scenario for deploying the **production API** and the
+**public demo** on one VPS, covering server hardening, DNS, secrets, GitHub,
+TLS, budget, monitoring, backups, rollback and day-2 operations.
 
-Этот документ — практика «сделай руками». Проектные решения и их обоснование
-живут в [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) (прод) и [`docs/DEMO.md`](DEMO.md)
-(демо); здесь они собраны в одну линейную инструкцию.
+This document is the "do it by hand" procedure. Design decisions and their
+rationale live in [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) (production) and
+[`docs/DEMO.md`](DEMO.md) (demo); here they are assembled into one linear
+instruction.
 
-> **Три правила, которые нельзя нарушать нигде.**
-> 1. Секреты (`.env`, `.env.demo`, приватные ключи, `OPENAI_API_KEY`) живут
->    только на сервере и в GitHub Secrets. Никогда в репозитории и никогда в
->    issue/логах.
-> 2. Наружу смотрят только 80/443. Порты `8000`, `8001`, `8501`, `5432`, `6379`
->    привязаны к loopback и не открываются в фаерволе.
-> 3. Демо-контур никогда не использует продовые секреты и продовую БД.
+> **Three rules that must never be broken.**
+> 1. Secrets (`.env`, `.env.demo`, private keys, `OPENAI_API_KEY`) live only on
+>    the server and in GitHub Secrets. Never in the repository and never in an
+>    issue or a log.
+> 2. Only 80/443 face the internet. Ports `8000`, `8001`, `8501`, `5432`, `6379`
+>    are bound to loopback and are not opened in the firewall.
+> 3. The demo contour never uses production secrets or the production database.
 
-## Соглашения этого гайда
+## Conventions used in this guide
 
-| Плейсхолдер | Значение |
+| Placeholder | Meaning |
 | --- | --- |
-| `<domain>` | ваш домен, например `example.com` |
-| `api.<domain>` | публичный адрес продового API |
-| `demo.<domain>` | публичный адрес демо-UI |
-| `<VPS_IP>` | IPv4 вашего сервера |
-| `deploy` | непривилегированный пользователь на сервере |
-| `/opt/docmind` | каталог прод-контура (совпадает с `DEPLOY_PATH` в GitHub) |
-| `/opt/docmind-demo` | каталог демо-контура (отдельный `DEPLOY_PATH`) |
+| `<domain>` | your domain, for example `example.com` |
+| `api.<domain>` | public address of the production API |
+| `demo.<domain>` | public address of the demo UI |
+| `<VPS_IP>` | IPv4 address of your server |
+| `deploy` | unprivileged user on the server |
+| `/opt/docmind` | production contour directory (matches `DEPLOY_PATH` in GitHub) |
+| `/opt/docmind-demo` | demo contour directory (a separate `DEPLOY_PATH`) |
 
-Команды выполняются на сервере, если не указано иное. Всё, где нужны права
-root, помечено `sudo`.
+Commands run on the server unless stated otherwise. Anything that needs root is
+marked with `sudo`.
 
 ---
 
-# Часть 0. Что должно получиться
+# Part 0. What the result looks like
 
 ```mermaid
 flowchart TB
     subgraph Internet
-        U1[Клиент / ваш код]
-        U2[Браузер посетителя]
-        SITE[Статический сайт на Vercel / Pages]
+        U1[Client / your code]
+        U2[Visitor browser]
+        SITE[Static site on Vercel / Pages]
     end
 
-    U1 -->|"443, api.domain"| C[Caddy: автоматический TLS]
+    U1 -->|"443, api.domain"| C[Caddy: automatic TLS]
     U2 -->|"443, demo.domain"| C
     SITE -.->|iframe| U2
 
-    subgraph PROD["Compose-проект docmind-prod"]
-        A["api: uvicorn 2 воркера"]
+    subgraph PROD["Compose project docmind-prod"]
+        A["api: uvicorn, 2 workers"]
         W["worker: arq"]
         D[(PostgreSQL + pgvector)]
         R[(Redis)]
@@ -58,8 +59,8 @@ flowchart TB
         W --- R
     end
 
-    subgraph DEMO["Compose-проект docmind-demo"]
-        DA["api: uvicorn 1 воркер"]
+    subgraph DEMO["Compose project docmind-demo"]
+        DA["api: uvicorn, 1 worker"]
         DW["worker: arq"]
         DD[(PostgreSQL + pgvector)]
         DR[(Redis)]
@@ -76,101 +77,104 @@ flowchart TB
     DA -->|HTTPS| P
 ```
 
-| Что | Где слушает | Кто видит |
+| Component | Listens on | Who can reach it |
 | --- | --- | --- |
-| Прод-API | `127.0.0.1:8000` (loopback) | интернет через `api.<domain>` |
-| Прод-DB/Redis | только Docker-сеть `docmind-prod_default` | никто снаружи |
-| Демо-API | `127.0.0.1:8001` (loopback) | никто: UI ходит к нему изнутри |
-| Демо-UI | `127.0.0.1:8501` (loopback) | интернет через `demo.<domain>` |
-| Демо-DB/Redis | только Docker-сеть `docmind-demo_default` | никто снаружи |
+| Production API | `127.0.0.1:8000` (loopback) | the internet via `api.<domain>` |
+| Production DB/Redis | only the `docmind-prod_default` Docker network | nobody from outside |
+| Demo API | `127.0.0.1:8001` (loopback) | nobody: the UI calls it from inside |
+| Demo UI | `127.0.0.1:8501` (loopback) | the internet via `demo.<domain>` |
+| Demo DB/Redis | only the `docmind-demo_default` Docker network | nobody from outside |
 
 ---
 
-# Часть 1. Требования и планирование ресурсов
+# Part 1. Requirements and capacity planning
 
-## 1.1. Что понадобится
+## 1.1. What you need
 
-- **VPS**: 2 vCPU / 4 ГБ RAM минимум для прода. Прод + демо вместе требуют
-  около **7–8 ГБ** в худшем случае (см. ниже), поэтому либо берите 8 ГБ, либо
-  ужмите лимиты в [`docker-compose.demo.yml`](../docker-compose.demo.yml).
-- **Диск**: 20 ГБ минимум. Считайте: образы (~1.5 ГБ), тома Postgres и uploads,
-  локальные бэкапы (5 последних дампов), логи Caddy.
-- **ОС**: Ubuntu 22.04/24.04 LTS или Debian 12.
-- **Домен** с возможностью создавать A/AAAA-записи.
-- **GitHub**: административный доступ к репозиторию (создание environments,
+- **VPS**: 2 vCPU / 4 GB RAM minimum for production. Production and demo together
+  need about **7–8 GB** in the worst case (see below), so either take 8 GB or
+  tighten the limits in [`docker-compose.demo.yml`](../docker-compose.demo.yml).
+- **Disk**: 20 GB minimum. Account for images (~1.5 GB), the Postgres and uploads
+  volumes, local backups (the last 5 dumps) and Caddy logs.
+- **OS**: Ubuntu 22.04/24.04 LTS or Debian 12.
+- **Domain** with the ability to create A/AAAA records.
+- **GitHub**: administrative access to the repository (creating environments,
   secrets, variables).
-- **Ключ OpenAI** с ограниченным бюджетом.
-- **GHCR**: приватный пакет тянется с VPS по PAT.
+- **OpenAI key** with a capped budget.
+- **GHCR**: the private package is pulled from the VPS with a PAT.
 
-## 1.2. Бюджет памяти
+## 1.2. Memory budget
 
-| Сервис | Лимит в compose | Комментарий |
+| Service | Compose limit | Note |
 | --- | --- | --- |
-| prod `api` | 2 ГБ, 2 CPU | [`docker-compose.prod.yml`](../docker-compose.prod.yml) |
-| prod `worker` | 2 ГБ, 2 CPU | там же |
-| prod `db` | 2 ГБ, 2 CPU | там же |
-| prod `redis` | 512 МБ | там же |
-| demo `api` | 1 ГБ, 1 CPU | [`docker-compose.demo.yml`](../docker-compose.demo.yml) |
-| demo `worker` | 1 ГБ, 1 CPU | там же |
-| demo `db` | 1 ГБ, 1 CPU | там же |
-| demo `redis` | 256 МБ | там же |
-| demo `demo` (UI) | 512 МБ | там же |
+| prod `api` | 2 GB, 2 CPU | [`docker-compose.prod.yml`](../docker-compose.prod.yml) |
+| prod `worker` | 2 GB, 2 CPU | same file |
+| prod `db` | 2 GB, 2 CPU | same file |
+| prod `redis` | 512 MB | same file |
+| demo `api` | 1 GB, 1 CPU | [`docker-compose.demo.yml`](../docker-compose.demo.yml) |
+| demo `worker` | 1 GB, 1 CPU | same file |
+| demo `db` | 1 GB, 1 CPU | same file |
+| demo `redis` | 256 MB | same file |
+| demo `demo` (UI) | 512 MB | same file |
 
-Итого худший случай: **~10.3 ГБ**. Практика: Postgres/Redis редко добирают
-лимит, и реальное потребление обычно в 1.5–2 раза ниже. Тем не менее:
+Worst case total: **~10.3 GB**. In practice Postgres/Redis rarely reach their
+limits and real usage is usually 1.5–2 times lower. Still:
 
-- При 4 ГБ — сначала поднимите прод, измерьте `docker stats`, и только потом
-  ужимайте демо (`api` 512 МБ, `worker` 512 МБ, `db` 512 МБ, UI 384 МБ).
-- Добавьте swap (см. шаг 6 части 2): он не спасёт от OOM-циклов, но сгладит пики.
+- With 4 GB, bring production up first, measure with `docker stats`, and only
+  then shrink the demo (`api` 512 MB, `worker` 512 MB, `db` 512 MB, UI 384 MB).
+- Add swap (step 6 of part 2): it will not save you from OOM loops, but it
+  smooths out spikes.
 
-## 1.3. Схема выбора провайдера
+## 1.3. Provider selection
 
-| Провайдер | Плюсы | Цена |
+| Provider | Advantages | Cost |
 | --- | --- | --- |
-| `openai` | не требует RAM, быстрый, минимум настройки | платит за трафик: обязателен лимит бюджета |
-| `ollama` | нет денежных расходов, данные не уходят | +8 ГБ RAM, slow first-token, `EMBEDDING_DIM=768` и своя БД |
+| `openai` | no RAM requirement, fast, minimal setup | pays per traffic: a budget cap is mandatory |
+| `ollama` | no monetary cost, data stays local | +8 GB RAM, slow first token, `EMBEDDING_DIM=768` and its own database |
 
-Для публичного демо с ограниченным бюджетом разумная комбинация: **прод и демо
-на OpenAI**, но с разными ключами доступа и жёстким лимитом в кабинете.
+For a public demo on a capped budget a sensible combination is **production and
+demo on OpenAI**, but with different access keys and a hard limit in the
+provider dashboard.
 
 ---
 
-# Часть 2. Первичная настройка VPS (шаги 1–8)
+# Part 2. Initial VPS setup (steps 1–8)
 
-## Шаг 1. Первый вход и обновление системы
+## Step 1. First login and system update
 
 ```bash
 ssh root@<VPS_IP>
 apt update && apt full-upgrade -y
 apt install -y curl git ufw fail2ban unzip ca-certificates jq
-timedatectl set-timezone Europe/Budapest        # или ваш пояс
+timedatectl set-timezone Europe/Budapest        # or your timezone
 ```
 
-Проверьте, что включены только нужные сервисы, и перезагрузитесь, если ядро
-обновилось:
+Check that only the services you need are enabled, and reboot if the kernel was
+updated:
 
 ```bash
 [ -f /var/run/reboot-required ] && reboot
 ```
 
-## Шаг 2. Пользователь `deploy` и SSH-ключ
+## Step 2. The `deploy` user and an SSH key
 
 ```bash
 adduser --gecos "" deploy
 usermod -aG sudo deploy
 ```
 
-На **вашей машине** сгенерируйте ключ для входа:
+On **your machine**, generate a key for logging in:
 
 ```bash
 ssh-keygen -t ed25519 -C "docmind-admin" -f ~/.ssh/docmind_admin -N ""
 ssh-copy-id -i ~/.ssh/docmind_admin.pub deploy@<VPS_IP>
-ssh deploy@<VPS_IP>     # проверьте вход
+ssh deploy@<VPS_IP>     # verify the login
 ```
 
-## Шаг 3. Ужесточение SSH
+## Step 3. SSH hardening
 
-**Не закрывайте текущую сессию**, пока не убедились, что новый вход работает.
+**Do not close the current session** until you have confirmed the new login
+works.
 
 ```bash
 sudo tee /etc/ssh/sshd_config.d/99-hardening.conf >/dev/null <<'EOF'
@@ -185,10 +189,10 @@ EOF
 sudo sshd -t && sudo systemctl reload ssh
 ```
 
-Проверка из **нового** терминала: `ssh deploy@<VPS_IP>` должен пустить,
-`ssh root@<VPS_IP>` — отказать.
+Check from a **new** terminal: `ssh deploy@<VPS_IP>` must succeed and
+`ssh root@<VPS_IP>` must be refused.
 
-## Шаг 4. Фаервол
+## Step 4. Firewall
 
 ```bash
 sudo ufw default deny incoming
@@ -196,15 +200,15 @@ sudo ufw default allow outgoing
 sudo ufw allow OpenSSH
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
-sudo ufw allow 443/udp      # только если включите HTTP/3 в Caddy
+sudo ufw allow 443/udp      # only if you enable HTTP/3 in Caddy
 sudo ufw enable
 sudo ufw status verbose
 ```
 
-> Порт 8000 и 8001 **не открываются никогда**: они привязаны к loopback и
-> доступны только процессам на самом сервере.
+> Ports 8000 and 8001 are **never opened**: they are bound to loopback and are
+> reachable only by processes on the server itself.
 
-## Шаг 5. Защита от перебора
+## Step 5. Brute-force protection
 
 ```bash
 sudo tee /etc/fail2ban/jail.d/sshd.local >/dev/null <<'EOF'
@@ -218,13 +222,13 @@ sudo systemctl enable --now fail2ban
 sudo fail2ban-client status sshd
 ```
 
-Автоматические обновления безопасности:
+Automatic security updates:
 
 ```bash
 sudo dpkg-reconfigure --priority=low unattended-upgrades
 ```
 
-## Шаг 6. Swap
+## Step 6. Swap
 
 ```bash
 sudo fallocate -l 4G /swapfile
@@ -235,9 +239,10 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 free -h
 ```
 
-Для 8+ ГБ RAM хватит 2 ГБ. Значение `vm.swappiness=10` уменьшит ненужный обмен.
+With 8+ GB of RAM, 2 GB is enough. `vm.swappiness=10` reduces unnecessary
+swapping.
 
-## Шаг 7. Docker Engine и Compose
+## Step 7. Docker Engine and Compose
 
 ```bash
 sudo install -m 0755 -d /etc/apt/keyrings
@@ -253,15 +258,15 @@ sudo apt install -y docker-ce docker-ce-cli containerd.io \
 sudo usermod -aG docker deploy
 ```
 
-Выйдите и войдите заново (чтобы применилась группа `docker`), затем проверьте:
+Log out and back in (so the `docker` group applies), then verify:
 
 ```bash
 docker --version && docker compose version
 docker run --rm hello-world
 ```
 
-**Ротация логов на уровне демона** (compose-файлы уже задают её на сервис, это
-страховка для чужих контейнеров):
+**Daemon-level log rotation** (the Compose files already set it per service;
+this is a safety net for containers you do not own):
 
 ```bash
 sudo tee /etc/docker/daemon.json >/dev/null <<'EOF'
@@ -273,17 +278,17 @@ EOF
 sudo systemctl restart docker
 ```
 
-## Шаг 8. Утилиты для эксплуатации
+## Step 8. Operations utilities
 
 ```bash
 sudo apt install -y rclone postgresql-client-16 || sudo apt install -y rclone postgresql-client
 ```
 
-- `rclone` — выгрузка бэкапов off-host (подключается через `BACKUP_SYNC_CMD`).
-- `psql` на хосте удобен для ручных проверок БД, но не обязателен: compose умеет
-  `exec -T db psql`.
+- `rclone` — off-host backup upload (wired in through `BACKUP_SYNC_CMD`).
+- `psql` on the host is handy for manual database checks but is not required:
+  Compose can run `exec -T db psql`.
 
-Опционально:
+Optional:
 
 ```bash
 git config --global user.email "ops@<domain>"
@@ -292,58 +297,59 @@ git config --global user.name "DocMind Ops"
 
 ---
 
-# Часть 3. DNS
+# Part 3. DNS
 
-Создайте записи у регистратора/в DNS-провайдере:
+Create the records at your registrar or DNS provider:
 
-| Тип | Имя | Значение | TTL |
+| Type | Name | Value | TTL |
 | --- | --- | --- | --- |
 | A | `api` | `<VPS_IP>` | 300 |
 | A | `demo` | `<VPS_IP>` | 300 |
-| AAAA | `api` / `demo` | IPv6, если есть | 300 |
+| AAAA | `api` / `demo` | IPv6, if available | 300 |
 
-Проверка:
+Verify:
 
 ```bash
 dig +short api.<domain>
 dig +short demo.<domain>
 ```
 
-> **Порядок важен.** Caddy выпускает сертификат через ACME (HTTP-01/TLS-ALPN),
-> поэтому DNS должен разрешаться **до** первого запуска Caddy, а 80/443 — быть
-> открыты. Иначе получите ошибку выпуска и временный запрет от Let's Encrypt.
+> **Order matters.** Caddy obtains its certificate over ACME (HTTP-01/TLS-ALPN),
+> so DNS must resolve **before** Caddy starts for the first time and 80/443 must
+> be open. Otherwise you get an issuance error and a temporary ban from Let's
+> Encrypt.
 
 ---
 
-# Часть 4. Каталоги
+# Part 4. Directories
 
 ```bash
 sudo mkdir -p /opt/docmind /opt/docmind-demo/corpus
 sudo chown -R deploy:deploy /opt/docmind /opt/docmind-demo
 ```
 
-Каталог логов Caddy здесь **не** создаётся: пользователь `caddy` появляется
-только после установки пакета (часть 10).
+The Caddy log directory is deliberately **not** created here: the `caddy` user
+appears only after the package is installed (part 10).
 
-Почему два каталога: каждый контур имеет **свой `DEPLOY_PATH`**, свой env-файл,
-свой state-файл и свои бэкапы. Смешивание каталогов — единственная ошибка,
-которая может привести к тому, что демо-деплой перезапишет файлы прод-деплоя.
+Why two directories: each contour has **its own `DEPLOY_PATH`**, its own env
+file, its own state file and its own backups. Mixing the directories is the one
+mistake that can make a demo deployment overwrite production deployment files.
 
 ---
 
-# Часть 5. Серверный `.env` для прода
+# Part 5. The server-side `.env` for production
 
-## 5.1. Генерация секретов
+## 5.1. Generating secrets
 
 ```bash
-openssl rand -hex 32     # пароль Postgres
-openssl rand -hex 32     # пароль Redis
-openssl rand -hex 48     # API_KEY (общий секрет API)
+openssl rand -hex 32     # Postgres password
+openssl rand -hex 32     # Redis password
+openssl rand -hex 48     # API_KEY (the shared API secret)
 ```
 
-Сохраните их в менеджере паролей: они невосстановимы.
+Store them in a password manager: they cannot be recovered.
 
-## 5.2. Создание файла
+## 5.2. Creating the file
 
 ```bash
 cd /opt/docmind
@@ -354,14 +360,14 @@ nano .env
 ```dotenv
 # --- PostgreSQL ---
 POSTGRES_USER=docmind
-POSTGRES_PASSWORD=<сгенерированный-пароль-32-байта>
+POSTGRES_PASSWORD=<generated-32-byte-password>
 POSTGRES_DB=docmind
 
 # --- Redis ---
-REDIS_PASSWORD=<сгенерированный-пароль-32-байта>
+REDIS_PASSWORD=<generated-32-byte-password>
 
 # --- API ---
-API_KEY=<сгенерированный-ключ-48-байт>
+API_KEY=<generated-48-byte-key>
 ENVIRONMENT=production
 ENABLE_DOCS=False
 METRICS_ENABLED=True
@@ -369,13 +375,13 @@ LOG_JSON=True
 LOG_LEVEL=INFO
 CORS_ORIGINS=https://app.<domain>
 
-# --- Провайдер ---
+# --- Provider ---
 EMBEDDING_PROVIDER=openai
 LLM_PROVIDER=openai
 EMBEDDING_DIM=1536
-OPENAI_API_KEY=<ключ-провайдера>
+OPENAI_API_KEY=<provider-key>
 
-# --- Опционально ---
+# --- Optional ---
 # MAX_UPLOAD_MB=25
 # LLM_REASONING_EFFORT=none
 # RATE_LIMIT_WINDOW_SECONDS=60
@@ -387,62 +393,62 @@ OPENAI_API_KEY=<ключ-провайдера>
 # BACKUP_SYNC_CMD=rclone copy --no-transfer
 ```
 
-Затем:
+Then:
 
 ```bash
 chmod 600 /opt/docmind/.env
-grep -c '=' /opt/docmind/.env     # санити-чек: файл не пустой
+grep -c '=' /opt/docmind/.env     # sanity check: the file is not empty
 ```
 
-## 5.3. Правила, которые проверяет система
+## 5.3. Rules enforced by the system
 
-| Правило | Кто проверяет | Последствие нарушения |
+| Rule | Enforced by | Consequence of a violation |
 | --- | --- | --- |
-| `API_KEY` обязателен | [`src/config.py`](../src/config.py) | API откажется стартовать |
-| `CORS_ORIGINS` не `*` в проде | [`src/config.py`](../src/config.py) | API откажется стартовать |
-| `EMBEDDING_DIM` совпадает с моделью **и** миграцией | [`src/db/schema_guard.py`](../src/db/schema_guard.py) | отказ на старте, а не порча данных |
-| `DATABASE_URL`/`REDIS_URL` не `localhost` | [`remote-deploy.sh`](../.github/deploy/remote-deploy.sh) | rollout прекращается до изменений |
-| `POSTGRES_PASSWORD` и т.п. обязательны | [`docker-compose.prod.yml`](../docker-compose.prod.yml) | `docker compose` не запустится |
+| `API_KEY` is mandatory | [`src/config.py`](../src/config.py) | the API refuses to start |
+| `CORS_ORIGINS` is not `*` in production | [`src/config.py`](../src/config.py) | the API refuses to start |
+| `EMBEDDING_DIM` matches the model **and** the migration | [`src/db/schema_guard.py`](../src/db/schema_guard.py) | startup fails instead of corrupting data |
+| `DATABASE_URL`/`REDIS_URL` are not `localhost` | [`remote-deploy.sh`](../.github/deploy/remote-deploy.sh) | the rollout stops before changing anything |
+| `POSTGRES_PASSWORD` and friends are mandatory | [`docker-compose.prod.yml`](../docker-compose.prod.yml) | `docker compose` will not start |
 
-## 5.4. Пул подключений к БД
+## 5.4. Database connection pool
 
-Формула из README: `(воркеры API + 1) * (DB_POOL_SIZE + DB_MAX_OVERFLOW) < max_connections`.
+The formula from the README: `(API workers + 1) * (DB_POOL_SIZE + DB_MAX_OVERFLOW) < max_connections`.
 
-Прод: 2 воркера + 1 arq-workker = `3 * (10 + 10) = 60` < `max_connections=100`.
-Если поднимаете воркеры — уменьшайте пул или увеличивайте `max_connections`
-(в Postgres по умолчанию 100, в pgvector-образе тоже).
+Production: 2 workers + 1 arq worker = `3 * (10 + 10) = 60` < `max_connections=100`.
+If you add workers, shrink the pool or raise `max_connections` (the Postgres
+default is 100, and so is the pgvector image's).
 
 ---
 
-# Часть 6. GitHub: ключ, PAT, environments
+# Part 6. GitHub: key, PAT, environments
 
-## 6.1. Ключ для деплоя
+## 6.1. Deploy key
 
-На **вашей машине**:
+On **your machine**:
 
 ```bash
 ssh-keygen -t ed25519 -C "github-actions-deploy" -f ~/.ssh/docmind_deploy -N ""
 ssh-copy-id -i ~/.ssh/docmind_deploy.pub deploy@<VPS_IP>
-cat ~/.ssh/docmind_deploy      # приватный ключ → в GitHub Secret SSH_KEY
+cat ~/.ssh/docmind_deploy      # private key -> GitHub Secret SSH_KEY
 ```
 
-### 6.1.1. Если у ключа есть парольная фраза
+### 6.1.1. If the key has a passphrase
 
-Ключ без пароля (`-N ""`, как выше) — предпочтительный вариант: его защищает
-сам GitHub Secret, а `SSH_PASSPHRASE` не нужен вообще.
+A key without a passphrase (`-N ""`, as above) is the preferred option: the
+GitHub Secret protects it, and `SSH_PASSPHRASE` is not needed at all.
 
-Если ключ всё же создан с парольной фразой, фраза хранится **отдельным**
-секретом, а не внутри `SSH_KEY`:
+If the key was created with a passphrase anyway, the passphrase is stored as a
+**separate** secret, not inside `SSH_KEY`:
 
 ```bash
 gh secret set SSH_PASSPHRASE --env production
 gh secret set SSH_PASSPHRASE --env demo
 ```
 
-`Deploy Production` и `Deploy Demo` передают его в `appleboy/scp-action` и
-`appleboy/ssh-action` через вход `passphrase`. Без этого секрета `drone-scp`
-устанавливает TCP-соединение и определяет ОС сервера, но аутентифицироваться не
-может:
+`Deploy Production` and `Deploy Demo` pass it to `appleboy/scp-action` and
+`appleboy/ssh-action` through the `passphrase` input. Without that secret
+`drone-scp` opens the TCP connection and detects the server OS, but cannot
+authenticate:
 
 ```
 ssh.ParsePrivateKey: ssh: this private key is passphrase protected
@@ -450,94 +456,95 @@ ssh: handshake failed: ssh: unable to authenticate, attempted methods [none],
 no supported methods remain
 ```
 
-`attempted methods [none]` — важная деталь: список методов аутентификации пуст,
-то есть ключ не загрузился вообще. Сервер здесь ни при чём, `authorized_keys`
-тоже: до сверки ключа дело не доходит.
+`attempted methods [none]` is the important detail: the list of authentication
+methods is empty, which means the key never loaded at all. The server is not
+involved here, and neither is `authorized_keys`: the comparison never happens.
 
-Проверить пару «ключ + фраза» до пуша:
+Verify the "key + passphrase" pair before pushing:
 
 ```bash
 ssh-keygen -y -P "$SSH_PASSPHRASE" -f ~/.ssh/docmind_deploy > /tmp/docmind.pub
-ssh-keygen -lf /tmp/docmind.pub        # отпечаток, который должен быть на сервере
+ssh-keygen -lf /tmp/docmind.pub        # the fingerprint that must exist on the server
 ```
 
-На VPS: `ssh-keygen -lf ~/.ssh/authorized_keys` — отпечатки обязаны совпасть.
-То же самое печатает диагностический шаг `Validate SSH deploy key` в обоих
-workflow, так что сверять можно прямо по логу Actions.
+On the VPS: `ssh-keygen -lf ~/.ssh/authorized_keys` — the fingerprints must
+match. The `Validate SSH deploy key` diagnostic step in both workflows prints
+the same value, so you can compare straight from the Actions log.
 
-## 6.2. Токен для GHCR
+## 6.2. GHCR token
 
-Создайте **Personal Access Token**:
+Create a **Personal Access Token**:
 
-- classic: scope `read:packages`;
-- или fine-grained: доступ к Packages (read).
+- classic: the `read:packages` scope;
+- or fine-grained: Packages access (read).
 
-`GHCR_USER` — ваш GitHub-логин. Это **не секрет**: он виден в имени репозитория,
-в URL клона и в пути образа `ghcr.io/<login>/docmind`. Поэтому он живёт в
-Variables, а не в Secrets: секретное значение GitHub маскирует во всех строках
-логов, и если логин входит в домен, то `environment.url` не публикуется —
-в конце job появляется `Skip setting environment url … may contain secret`.
+`GHCR_USER` is your GitHub login. It is **not a secret**: it appears in the
+repository name, in the clone URL and in the image path `ghcr.io/<login>/docmind`.
+That is why it lives in Variables, not Secrets: GitHub masks a secret value in
+every log line, and when the login is part of the domain, `environment.url` is
+not published either — the job ends with `Skip setting environment url … may
+contain secret`.
 
-`GHCR_PULL_TOKEN` — сам токен; на VPS он используется только для
-`docker login ghcr.io` и `docker pull`.
+`GHCR_PULL_TOKEN` is the token itself; on the VPS it is used only for
+`docker login ghcr.io` and `docker pull`.
 
 ## 6.3. Environment `production`
 
 | Kind | Name | Value |
 | --- | --- | --- |
-| Environment | `production` | Required reviewers: вы/команда (ручной approve) |
+| Environment | `production` | Required reviewers: you/your team (manual approve) |
 | Secret | `SSH_HOST` | `<VPS_IP>` |
 | Secret | `SSH_USER` | `deploy` |
-| Secret | `SSH_KEY` | приватный ключ целиком, с `-----BEGIN…/END…-----` |
-| Secret | `SSH_PASSPHRASE` | парольная фраза к `SSH_KEY`; **не нужен**, если ключ без пароля |
-| Secret | `SSH_PORT` | `22` (или ваш) |
+| Secret | `SSH_KEY` | the whole private key, with `-----BEGIN…/END…-----` |
+| Secret | `SSH_PASSPHRASE` | passphrase for `SSH_KEY`; **not needed** when the key has none |
+| Secret | `SSH_PORT` | `22` (or yours) |
 | Secret | `DEPLOY_PATH` | `/opt/docmind` |
-| Variable | `GHCR_USER` | логин GitHub; **не** секрет (см. 6.2) |
-| Secret | `GHCR_PULL_TOKEN` | доступ к приватному образу |
+| Variable | `GHCR_USER` | GitHub login; **not** a secret (see 6.2) |
+| Secret | `GHCR_PULL_TOKEN` | access to the private image |
 | Variable | `PRODUCTION_URL` | `https://api.<domain>` |
 
 ## 6.4. Environment `demo`
 
 | Kind | Name | Value |
 | --- | --- | --- |
-| Environment | `demo` | **без** required reviewers |
-| Secret | `SSH_HOST`, `SSH_USER`, `SSH_KEY`, `SSH_PORT` | те же доступы |
-| Secret | `SSH_PASSPHRASE` | фраза от **демо**-ключа; секреты контуров не переиспользуются |
+| Environment | `demo` | **without** required reviewers |
+| Secret | `SSH_HOST`, `SSH_USER`, `SSH_KEY`, `SSH_PORT` | the same access |
+| Secret | `SSH_PASSPHRASE` | passphrase of the **demo** key; contour secrets are never reused |
 | Secret | `DEPLOY_PATH` | `/opt/docmind-demo` |
-| Variable | `GHCR_USER` | тот же логин |
-| Secret | `GHCR_PULL_TOKEN` | тот же токен |
+| Variable | `GHCR_USER` | the same login |
+| Secret | `GHCR_PULL_TOKEN` | the same token |
 | Variable | `DEMO_URL` | `https://demo.<domain>` |
 
-> Если `SSH_HOST` не задан, job падает с явной ошибкой, а не пропускает деплой
-> молча. Если `DEPLOY_PATH` демо укажет на `/opt/docmind`, демо-rollout начнёт
-> управлять прод-стеком — это единственная конфигурационная ошибка, реально
-> ломающая прод.
+> If `SSH_HOST` is missing, the job fails with an explicit error instead of
+> silently skipping the deployment. If the demo `DEPLOY_PATH` points at
+> `/opt/docmind`, the demo rollout starts managing the production stack — the one
+> configuration mistake that really breaks production.
 
 ---
 
-# Часть 7. Первый релиз образов
+# Part 7. The first image release
 
-## 7.1. Локальные гейты перед merge
+## 7.1. Local gates before merge
 
 ```bash
 make install      # python -m pip install -e ".[dev,demo]" + pre-commit hooks
-make check        # ruff + ruff format --check + mypy + pytest с порогом 60%
+make check        # ruff + ruff format --check + mypy + pytest with a 60% gate
 ```
 
-## 7.2. Что запустит CI
+## 7.2. What CI runs
 
-[`ci.yml`](../.github/workflows/ci.yml) на каждый PR:
+[`ci.yml`](../.github/workflows/ci.yml) on every PR:
 
-- **lint**: `ruff check` и `ruff format --check`;
+- **lint**: `ruff check` and `ruff format --check`;
 - **typecheck**: `mypy src`;
 - **test**: `pytest --cov=src --cov-fail-under=60`;
 - **migrations-and-integration**: `alembic upgrade head`, `alembic check`
-  (детект дрейфа схемы) и `pytest -m integration` на живом pgvector.
+  (schema drift detection) and `pytest -m integration` against a live pgvector.
 
-Плюс [`security.yml`](../.github/workflows/security.yml) (CodeQL, pip-audit,
-gitleaks, Trivy FS) и [`dependency-review.yml`](../.github/workflows/dependency-review.yml).
+Plus [`security.yml`](../.github/workflows/security.yml) (CodeQL, pip-audit,
+gitleaks, Trivy FS) and [`dependency-review.yml`](../.github/workflows/dependency-review.yml).
 
-## 7.3. Публикация образов
+## 7.3. Publishing images
 
 ```bash
 git checkout main && git pull
@@ -545,110 +552,110 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-Запускаются два независимых workflow:
+Two independent workflows start:
 
-| Workflow | Образ | Гейт |
+| Workflow | Image | Gate |
 | --- | --- | --- |
 | [`release-image.yml`](../.github/workflows/release-image.yml) | `ghcr.io/<owner>/<repo>` | Trivy HIGH/CRITICAL, SBOM + provenance |
-| [`release-demo-image.yml`](../.github/workflows/release-demo-image.yml) | `ghcr.io/<owner>/<repo>-demo` | тот же гейт, но отдельным workflow |
+| [`release-demo-image.yml`](../.github/workflows/release-demo-image.yml) | `ghcr.io/<owner>/<repo>-demo` | the same gate, in a separate workflow |
 
-Разделение сделано специально: CVE в Streamlit-стеке не должен блокировать
-релиз продакшена. Тег `sha-<full-sha>` (`type=sha,format=long`) есть у обоих
-образов — по нему деплои резолвят диджест.
+The split is deliberate: a CVE in the Streamlit stack must not block a
+production release. The `sha-<full-sha>` tag (`type=sha,format=long`) exists on
+both images — deployments resolve the digest from it.
 
-Если Trivy-гейт упал: смотрите отчёт в логах job, обновите зависимость или
-базовый образ, затем перезапустите workflow. Не отключайте гейт — digest-пиннинг
-защищает только от подмены, а не от уязвимого кода.
+If the Trivy gate fails: read the report in the job log, update the dependency or
+the base image, then re-run the workflow. Do not disable the gate — digest
+pinning protects against substitution, not against vulnerable code.
 
 ---
 
-# Часть 8. Первый деплой прода
+# Part 8. The first production deployment
 
-1. Откройте Actions → **Deploy Production**.
-2. Если это запуск после релиза — нажмите **Review deployments → Approve**.
-   Либо запустите вручную (`workflow_dispatch`) и укажите `image_tag`
-   (например `sha-<full-sha>` или `v1.0.0`).
-3. Что произойдёт на сервере ([`remote-deploy.sh`](../.github/deploy/remote-deploy.sh)):
+1. Open Actions → **Deploy Production**.
+2. If this is a post-release run, click **Review deployments → Approve**.
+   Alternatively run it manually (`workflow_dispatch`) and pass `image_tag`
+   (for example `sha-<full-sha>` or `v1.0.0`).
+3. What happens on the server ([`remote-deploy.sh`](../.github/deploy/remote-deploy.sh)):
 
-| Этап | Действие | Почему |
+| Stage | Action | Why |
 | --- | --- | --- |
-| 0 | Отказ, если `DATABASE_URL`/`REDIS_URL` указывают на localhost | иначе контейнер пойдёт в свой loopback и упадёт |
-| 1 | `docker login`, `docker pull`, резолв диджеста `repo@sha256:...` | неизменяемая ссылка вместо mutable-тега |
-| 2 | `compose up -d --wait db redis` | backing-сервисы должны быть healthy |
-| 3 | Обязательный `pg_dump` в `backups/predeploy-*.sql` | без бэкапа миграции не применяются |
-| 3b | `--profile ollama` + `ollama-init` | только если выбран Ollama |
-| 4 | `alembic upgrade head` **один раз**, вне старта контейнера | рестарт не может изменить схему |
-| 5 | `compose up -d --no-build api worker` | переключение трафика |
-| 5a | Ожидание `/health` до 36 попыток × 5 с = 3 минуты | иначе автооткат |
-| 5b | `POST_DEPLOY_CMD`, если задан | у прода пусто; у демо — seed |
-| 6 | Запись тега в `.deployed_image_tag` | основа для откатa |
+| 0 | Refuse to continue if `DATABASE_URL`/`REDIS_URL` point at localhost | otherwise the container goes to its own loopback and dies |
+| 1 | `docker login`, `docker pull`, resolve the `repo@sha256:...` digest | an immutable reference instead of a mutable tag |
+| 2 | `compose up -d --wait db redis` | backing services must be healthy |
+| 3 | Mandatory `pg_dump` into `backups/predeploy-*.sql` | migrations are not applied without a backup |
+| 3b | `--profile ollama` + `ollama-init` | only when Ollama is selected |
+| 4 | `alembic upgrade head` **once**, outside container startup | a restart can never change the schema |
+| 5 | `compose up -d --no-build api worker` | traffic switch |
+| 5a | Wait for `/health` up to 36 attempts × 5 s = 3 minutes | otherwise automatic rollback |
+| 5b | `POST_DEPLOY_CMD`, when set | empty for production; seed for the demo |
+| 6 | Write the tag to `.deployed_image_tag` | the basis for a rollback |
 
-4. **Первый деплой**: предыдущего тега нет, автооткат недоступен — об это
-   скрипт пишет в лог явно. Держите SSH-сессию под рукой.
+4. **First deployment**: there is no previous tag, so automatic rollback is not
+   available — the script logs that explicitly. Keep an SSH session at hand.
 
-Ожидаемые строки в логе: `deploying ghcr.io/...@sha256:...`,
+Expected log lines: `deploying ghcr.io/...@sha256:...`,
 `database backed up to backups/predeploy-...sql`, `applying database migrations`,
 `health check passed`.
 
 ---
 
-# Часть 9. Верификация прода
+# Part 9. Production verification
 
 ```bash
 cd /opt/docmind
-set -a; . ./.env; set +a          # подхватить переменные из .env в текущую сессию
+set -a; . ./.env; set +a          # pull the .env variables into the current session
 
 curl -fsS http://127.0.0.1:8000/health | jq .
 ```
 
-Ожидаемые поля ([`src/schemas/meta.py`](../src/schemas/meta.py)):
+Expected fields ([`src/schemas/meta.py`](../src/schemas/meta.py)):
 
 ```json
 {"status":"healthy","database":true,"redis":true,"version":"1.0.0",
  "environment":"production","provider_ready":true}
 ```
 
-`status` может быть `degraded` (тогда ответ 503) — это значит, что не отвечает
-Postgres или Redis.
+`status` may be `degraded` (the response is 503 then) — that means Postgres or
+Redis is not answering.
 
-Проверка авторизации и данных:
+Check authorization and data:
 
 ```bash
-# без ключа — 401
+# without a key — 401
 curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/api/v1/documents
 
-# с ключом — 200 и список
+# with a key — 200 and the list
 curl -fsS -H "X-API-Key: $API_KEY" http://127.0.0.1:8000/api/v1/documents | jq .
 
-# метрики читаются с самого хоста
+# metrics are readable from the host itself
 curl -fsS http://127.0.0.1:8000/metrics | head -n 20
 
-# версия задеплоенного образа
+# version of the deployed image
 cat .deployed_image_tag
 docker compose -f docker-compose.prod.yml ps
 ```
 
-Сквозной тест (загрузка → индексация → чат):
+End-to-end test (upload → indexing → chat):
 
 ```bash
-printf 'DocMind — RAG-сервис для документов. Тестовый документ.\n' > /tmp/sample.txt
+printf 'DocMind is a RAG service for documents. Test document.\n' > /tmp/sample.txt
 
 DOC_ID=$(curl -fsS -H "X-API-Key: $API_KEY" \
   -F "file=@/tmp/sample.txt" \
   http://127.0.0.1:8000/api/v1/documents/upload | jq -r .id)
 echo "$DOC_ID"
 
-# ждём, пока статус станет completed
+# wait until the status becomes completed
 watch -n 3 "curl -fsS -H 'X-API-Key: $API_KEY' \
   http://127.0.0.1:8000/api/v1/documents/$DOC_ID/status | jq '{status, chunk_count}'"
 
-# потоковый ответ: токены должны появляться постепенно, а не одним блоком
+# streaming answer: tokens must appear gradually, not as one block
 curl -sSN -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
-  -d "{\"query\":\"О чём этот документ?\",\"document_ids\":[\"$DOC_ID\"]}" \
+  -d "{\"query\":\"What is this document about?\",\"document_ids\":[\"$DOC_ID\"]}" \
   http://127.0.0.1:8000/api/v1/chat/completions
 ```
 
-Уберите тестовый документ, чтобы он не попал в прод-корпус:
+Remove the test document so it does not end up in the production corpus:
 
 ```bash
 curl -fsS -X DELETE -H "X-API-Key: $API_KEY" \
@@ -657,9 +664,9 @@ curl -fsS -X DELETE -H "X-API-Key: $API_KEY" \
 
 ---
 
-# Часть 10. Caddy: TLS и vhosts
+# Part 10. Caddy: TLS and vhosts
 
-## 10.1. Установка
+## 10.1. Installation
 
 ```bash
 sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
@@ -670,59 +677,60 @@ curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
 sudo apt update && sudo apt install -y caddy
 ```
 
-## 10.2. Конфигурация
+## 10.2. Configuration
 
-Сначала — каталог логов: Caddy стартует под пользователем `caddy`, который
-появляется лишь после установки пакета, и без прав на этот каталог сервис не
-поднимется.
+Start with the log directory: Caddy runs as the `caddy` user, which appears only
+after the package is installed, and without permissions on that directory the
+service will not start.
 
 ```bash
 sudo mkdir -p /var/log/caddy
 sudo chown -R caddy:caddy /var/log/caddy
 ```
 
-> **Ловушка.** `sudo caddy validate` (как и любой `caddy run`/`caddy reload` от
-> root) **создаёт** файлы из директивы `log` от `root` с правами `0600`. После
-> этого `systemctl reload caddy` падает с
-> `open /var/log/caddy/docmind-api.log: permission denied` и `status_code:400`
-> от admin API, хотя `validate` рапортует `Valid configuration`. Лечится один
-> раз и навсегда:
+> **Trap.** `sudo caddy validate` (like any `caddy run`/`caddy reload` as root)
+> **creates** the files declared by the `log` directive as `root` with `0600`
+> permissions. After that `systemctl reload caddy` fails with
+> `open /var/log/caddy/docmind-api.log: permission denied` and `status_code:400`
+> from the admin API, even though `validate` reports `Valid configuration`.
+> Fix it once and for all:
 >
 > ```bash
 > sudo chown caddy:caddy /var/log/caddy/*.log
 > ```
 >
-> Повторный `validate` от `sudo` уже безопасен: root, открывая существующий
-> файл, владельца не меняет.
+> A later `validate` run from `sudo` is safe: root opening an existing file does
+> not change its owner.
 
-Возьмите [`deploy/caddy/Caddyfile.example`](../deploy/caddy/Caddyfile.example)
-как основу:
+Take [`deploy/caddy/Caddyfile.example`](../deploy/caddy/Caddyfile.example) as
+the basis:
 
 ```bash
-sudo cp /opt/docmind/deploy/caddy/Caddyfile.example /etc/caddy/Caddyfile   # если файл есть на сервере
+sudo cp /opt/docmind/deploy/caddy/Caddyfile.example /etc/caddy/Caddyfile   # if the file exists on the server
 sudo nano /etc/caddy/Caddyfile
 ```
 
-Замените: `email` на реальный, `api.example.com` → `api.<domain>`,
-`demo.example.com` → `demo.<domain>`. Ключевые моменты конфига:
+Replace: `email` with a real address, `api.example.com` → `api.<domain>`,
+`demo.example.com` → `demo.<domain>`. Key parts of the configuration:
 
-| Блок | Зачем |
+| Block | Why |
 | --- | --- |
-| `request_body { max_size 30MB }` | чуть выше `MAX_UPLOAD_MB=25`, иначе multipart-обёртка срежет валидный файл |
-| `handle /health` | публичный проб без ключа; принимает `GET` и `HEAD` |
-| `handle /metrics` + `remote_ip` | `/metrics` отдаётся **без авторизации** — наружу нельзя |
-| `handle /api/v1/chat/completions` + `flush_interval -1` | без этого SSE придёт одним блоком в конце |
-| `header_up X-Forwarded-For {remote_host}` | явная **перезапись**, а не append. На Caddy ≥ 2.7 избыточно (входящий заголовок от недоверенного пира игнорируется), но безвредно и остаётся страховкой, если позже расширить `trusted_proxies` |
-| `log { output file ... { roll_size / roll_keep } }` | имя попадает в Certificate Transparency, сканеры идут сразу: без ротации лог растёт безгранично |
-| demo vhost: `read_timeout 0` | WebSocket Streamlit не должен умирать по таймауту |
-| demo vhost: нет `X-Frame-Options` | страница встраивается в iframe на сайте |
+| `request_body { max_size 30MB }` | slightly above `MAX_UPLOAD_MB=25`, otherwise the multipart envelope truncates a valid file |
+| `handle /health` | public probe without a key; accepts `GET` and `HEAD` |
+| `handle /metrics` + `remote_ip` | `/metrics` is served **without authorization** — it must not face the internet |
+| `handle /api/v1/chat/completions` + `flush_interval -1` | without it SSE arrives as one block at the end |
+| `header_up X-Forwarded-For {remote_host}` | an explicit **overwrite**, not an append. Redundant on Caddy ≥ 2.7 (an incoming header from an untrusted peer is ignored), but harmless and remains a safety net if `trusted_proxies` is extended later |
+| `log { output file ... { roll_size / roll_keep } }` | the name enters Certificate Transparency and scanners follow immediately: without rotation the log grows without bound |
+| demo vhost: `read_timeout 0` | the Streamlit WebSocket must not die on a timeout |
+| demo vhost: no `X-Frame-Options` | the page is embedded in an iframe on the site |
 
-> WARN `Unnecessary header_up X-Forwarded-For/Proto` в выводе `caddy validate` —
-> **ожидаемый шум** на Caddy ≥ 2.7, а `Caddyfile input is not formatted` лечится
-> `sudo caddy fmt --overwrite /etc/caddy/Caddyfile`. Ни один из них не мешает
-> загрузке конфига.
+> The WARN `Unnecessary header_up X-Forwarded-For/Proto` printed by
+> `caddy validate` is **expected noise** on Caddy ≥ 2.7, and
+> `Caddyfile input is not formatted` is fixed by
+> `sudo caddy fmt --overwrite /etc/caddy/Caddyfile`. Neither prevents the config
+> from loading.
 
-## 10.3. Запуск и проверка
+## 10.3. Starting and checking
 
 ```bash
 sudo caddy validate --config /etc/caddy/Caddyfile
@@ -731,61 +739,62 @@ sudo systemctl reload caddy
 sudo journalctl -u caddy -n 50 --no-pager
 ```
 
-Проверки:
+Checks:
 
 ```bash
-curl -sS -o /dev/null -w '%{http_code}\n' https://api.<domain>/health      # ждём 200
+curl -sS -o /dev/null -w '%{http_code}\n' https://api.<domain>/health      # expect 200
 curl -sS  https://api.<domain>/health | jq .
-curl -sSI https://api.<domain>/health | head -n 3                          # HEAD тоже разрешён
-curl -sS -o /dev/null -w '%{http_code}\n' https://api.<domain>/metrics    # ждём 404
+curl -sSI https://api.<domain>/health | head -n 3                          # HEAD is allowed too
+curl -sS -o /dev/null -w '%{http_code}\n' https://api.<domain>/metrics    # expect 404
 curl -sS -o /dev/null -w '%{http_code}\n' \
-  -H "X-API-Key: $API_KEY" https://api.<domain>/api/v1/documents          # ждём 200
+  -H "X-API-Key: $API_KEY" https://api.<domain>/api/v1/documents          # expect 200
 ```
 
-> `/health` принимает и `GET`, и `HEAD` ([`src/main.py`](../src/main.py)). Если
-> мониторинг пробует `HEAD` и получает `405`, значит развёрнута старая сборка:
-> такой probe выглядит как «сервис лежит» при полностью живом API.
+> `/health` accepts both `GET` and `HEAD` ([`src/main.py`](../src/main.py)). If a
+> monitor sends `HEAD` and receives `405`, an old build is deployed: such a probe
+> looks like "the service is down" while the API is fully alive.
 
-Проверка, что реальный IP клиента доходит до приложения: попросите кого-то
-снаружи вызвать API и убедитесь, что в JSON-логе Caddy `client_ip` — его адрес,
-а не `127.0.0.1`.
+To verify that the real client IP reaches the application, ask someone outside to
+call the API and confirm that the Caddy JSON log shows their address in
+`client_ip`, not `127.0.0.1`.
 
-## 10.4. Если сертификат не выпускается
+## 10.4. If the certificate is not issued
 
-| Симптом | Причина |
+| Symptom | Cause |
 | --- | --- |
-| `no such host` / NXDOMAIN | A-запись не создана или не разошлась |
-| `connection refused` | 80/443 закрыты в `ufw` или у провайдера |
-| `rate limited` | слишком много попыток за 7 дней: подождите или используйте staging CA |
-| Валидный ответ, но предупреждение о сертификате | сертификат ещё получается; проверьте `journalctl -u caddy` |
+| `no such host` / NXDOMAIN | the A record was not created or has not propagated |
+| `connection refused` | 80/443 are closed in `ufw` or at the provider |
+| `rate limited` | too many attempts within 7 days: wait or use the staging CA |
+| A valid response but a certificate warning | the certificate is still being obtained; check `journalctl -u caddy` |
 
-## 10.5. Если vhost отдаёт 502
+## 10.5. If a vhost returns 502
 
-`dial tcp 127.0.0.1:8501: connect: connection refused` в
-`/var/log/caddy/*.log` означает, что **не запущен апстрим**, а не ошибку Caddy:
-сверьте `ss -lntp | grep -E ':(8000|8501)\b'`. Если демо-контур на этом VPS не
-нужен, удалите demo-vhost — иначе каждый интернет-сканер (`/.env`,
-`/.git/config`, `/wp-json/`, `/graphql`) продолжит наполнять лог. Ротация
-`roll_size`/`roll_keep` в [`deploy/caddy/Caddyfile.example`](../deploy/caddy/Caddyfile.example)
-ограничивает его размер, но не убирает шум.
+`dial tcp 127.0.0.1:8501: connect: connection refused` in
+`/var/log/caddy/*.log` means the **upstream is not running**, not a Caddy bug:
+check `ss -lntp | grep -E ':(8000|8501)\b'`. If the demo contour is not needed on
+this VPS, remove the demo vhost — otherwise every internet scanner (`/.env`,
+`/.git/config`, `/wp-json/`, `/graphql`) keeps filling the log. The
+`roll_size`/`roll_keep` rotation in
+[`deploy/caddy/Caddyfile.example`](../deploy/caddy/Caddyfile.example) bounds its
+size, but does not remove the noise.
 
 ---
 
-# Часть 11. Демо-контур
+# Part 11. The demo contour
 
-## 11.1. Подготовка
+## 11.1. Preparation
 
 ```bash
 mkdir -p /opt/docmind-demo/corpus
-# положите 2–3 документа, которые не жалко показать публично
+# put 2-3 documents there that you do not mind showing publicly
 cp /path/to/*.pdf /opt/docmind-demo/corpus/
 ls -la /opt/docmind-demo/corpus
 ```
 
-Поддерживаются `.txt`, `.md`, `.csv`, `.json`, `.pdf`
+Supported suffixes: `.txt`, `.md`, `.csv`, `.json`, `.pdf`
 ([`src/services/parser.py`](../src/services/parser.py)).
 
-## 11.2. Свой `.env.demo`
+## 11.2. Its own `.env.demo`
 
 ```bash
 cd /opt/docmind-demo
@@ -794,16 +803,16 @@ nano .env.demo
 ```
 
 ```dotenv
-# --- PostgreSQL (собственная БД!) ---
+# --- PostgreSQL (a database of its own!) ---
 POSTGRES_USER=docmind_demo
-POSTGRES_PASSWORD=<отдельный-пароль>
+POSTGRES_PASSWORD=<separate-password>
 POSTGRES_DB=docmind_demo
 
 # --- Redis ---
-REDIS_PASSWORD=<отдельный-пароль>
+REDIS_PASSWORD=<separate-password>
 
-# --- API: КЛЮЧ ДОЛЖЕН ОТЛИЧАТЬСЯ ОТ ПРОДОВОГО ---
-API_KEY=<отдельный-ключ-демо>
+# --- API: THE KEY MUST DIFFER FROM THE PRODUCTION ONE ---
+API_KEY=<separate-demo-key>
 
 CORS_ORIGINS=https://demo.<domain>
 DOCMIND_PUBLIC_API_URL=https://demo.<domain>
@@ -811,12 +820,12 @@ DOCMIND_PUBLIC_API_URL=https://demo.<domain>
 EMBEDDING_PROVIDER=openai
 LLM_PROVIDER=openai
 EMBEDDING_DIM=1536
-OPENAI_API_KEY=<ключ-провайдера-для-демо>
+OPENAI_API_KEY=<provider-key-for-the-demo>
 
 ENABLE_DOCS=False
 METRICS_ENABLED=True
 
-# --- Защита бюджета и корректные лимиты ---
+# --- Budget protection and sensible limits ---
 RATE_LIMIT_WINDOW_SECONDS=60
 CHAT_RATE_LIMIT_REQUESTS=5
 UPLOAD_RATE_LIMIT_REQUESTS=10
@@ -831,25 +840,26 @@ SEED_WAIT_SECONDS=180
 chmod 600 /opt/docmind-demo/.env.demo
 ```
 
-> **Почему `--env-file .env.demo` обязателен в каждой команде.**
-> Compose подставляет `${VAR:?...}` только из окружения процесса, из файла,
-> переданного через `--env-file`, либо из файла с именем ровно `.env` в каталоге
-> проекта. Секции `env_file:` в [`docker-compose.demo.yml`](../docker-compose.demo.yml)
-> наполняют окружение контейнеров и применяются **после** интерполяции, поэтому
-> сами по себе они `POSTGRES_PASSWORD`/`API_KEY`/`REDIS_PASSWORD` не разрешают.
-> Прод-контур маскировал это совпадением `ENV_FILE=.env` с автозагружаемым
-> файлом; для демо без флага Compose печатает по одной ошибке
-> `required variable … is missing a value` на каждый сервис. Скрипт деплоя
-> передаёт флаг сам, в ручных командах его нужно указывать явно.
+> **Why `--env-file .env.demo` is mandatory in every command.**
+> Compose resolves `${VAR:?...}` only from the process environment, from a file
+> passed with `--env-file`, or from a file named exactly `.env` in the project
+> directory. The `env_file:` sections in
+> [`docker-compose.demo.yml`](../docker-compose.demo.yml) populate the container
+> environment and are applied **after** interpolation, so on their own they do
+> not satisfy `POSTGRES_PASSWORD`/`API_KEY`/`REDIS_PASSWORD`. The production
+> contour hid this because `ENV_FILE=.env` matches the file Compose loads on its
+> own; without the flag Compose prints one
+> `required variable … is missing a value` error per service for the demo. The
+> deploy script passes the flag itself; manual commands must pass it explicitly.
 
-## 11.3. Деплой демо
+## 11.3. Deploying the demo
 
-Автоматически после успешного `Release Demo Image`, либо вручную:
+Automatically after a successful `Release Demo Image`, or manually:
 Actions → **Deploy Demo** → Run workflow → `image_tag`.
 
-Порядок шагов — тот же, но с другими параметрами:
+The sequence of steps is the same, with different parameters:
 
-| Параметр | Демо |
+| Parameter | Demo |
 | --- | --- |
 | `COMPOSE_FILE` | `docker-compose.demo.yml` |
 | `ENV_FILE` | `.env.demo` |
@@ -859,13 +869,13 @@ Actions → **Deploy Demo** → Run workflow → `image_tag`.
 | `TRAFFIC_SERVICES` | `api worker demo` |
 | `POST_DEPLOY_CMD` | `docker compose -f docker-compose.demo.yml --env-file .env.demo --profile seed run --rm demo-seed` |
 
-Скрипт [`remote-deploy.sh`](../.github/deploy/remote-deploy.sh) добавляет
-`--env-file "${ENV_FILE}"` во все свои вызовы Compose и перед `docker login`
-выполняет `compose config --quiet`: если `.env.demo` нет, он не читается или в
-нём не хватает переменной, роллаут падает с внятным сообщением, не трогая
-работающий контур.
+The script [`remote-deploy.sh`](../.github/deploy/remote-deploy.sh) adds
+`--env-file "${ENV_FILE}"` to every Compose invocation and runs
+`compose config --quiet` before `docker login`: if `.env.demo` is missing,
+unreadable or short of a variable, the rollout fails with a clear message
+without touching the running contour.
 
-## 11.4. Проверка демо
+## 11.4. Verifying the demo
 
 ```bash
 cd /opt/docmind-demo
@@ -877,12 +887,12 @@ curl -fsS -H "X-API-Key: $API_KEY" http://127.0.0.1:8001/api/v1/documents \
   | jq -r '.[] | "\(.filename)\t\(.status)\t\(.chunk_count) chunks"'
 ```
 
-В браузере: `http://127.0.0.1:8501` — должен появиться список документов и таб
-чата; загрузки быть не должно.
+In a browser: `http://127.0.0.1:8501` must show the document list and the chat
+tab; there must be no upload widget.
 
-## 11.5. Ручной seed и обновление корпуса
+## 11.5. Manual seed and corpus updates
 
-После добавления файлов:
+After adding files:
 
 ```bash
 cd /opt/docmind-demo
@@ -890,21 +900,21 @@ docker compose -f docker-compose.demo.yml --env-file .env.demo \
   --profile seed run --rm demo-seed
 ```
 
-Скрипт идемпотентен: уже проиндексированные по имени файла документы он
-пропускает и ждёт перехода каждого нового в `completed`.
+The script is idempotent: documents already indexed by filename are skipped, and
+each new one is awaited until it reaches `completed`.
 
-## 11.6. Полный сброс демо
+## 11.6. Full demo reset
 
 ```bash
 cd /opt/docmind-demo
 docker compose -f docker-compose.demo.yml --env-file .env.demo down
 docker volume rm docmind-demo_demo_pg_data docmind-demo_demo_uploads
-# следующий деплой создаст схему заново и наполнит корпус
+# the next deployment recreates the schema and re-seeds the corpus
 ```
 
 ---
 
-# Часть 12. Встраивание демо на сайт
+# Part 12. Embedding the demo on the site
 
 ```html
 <iframe
@@ -918,192 +928,198 @@ docker volume rm docmind-demo_demo_pg_data docmind-demo_demo_uploads
   allow="clipboard-write"
 ></iframe>
 <p>
-  Демонстрация не отображается?
-  <a href="https://demo.<domain>/" target="_blank" rel="noopener">Откройте в новой вкладке</a>.
+  Demo not rendering?
+  <a href="https://demo.<domain>/" target="_blank" rel="noopener">Open it in a new tab</a>.
 </p>
 ```
 
-Правила и подводные камни:
+Rules and pitfalls:
 
-- `?embed=true` убирает внешние отступы Streamlit. Проверьте на своей версии.
-- Всегда оставляйте запасную ссылку: корпоративные прокси, блокировщики и CSP
-  родительской страницы ломают iframe, и это не ваша ошибка.
-- HTTPS обязателен с обеих сторон: сайт по HTTPS не встроит HTTP-фрейм.
-- Если нужно ограничить, кто встраивает, задайте в Caddy
-  `frame-ancestors 'self' https://<ваш-сайт>` вместо удаления защиты.
-- Загрузка файлов в UI **отсутствует**, вопросы ограничены
+- `?embed=true` removes Streamlit's outer padding. Verify it on your version.
+- Always keep a fallback link: corporate proxies, blockers and the parent page's
+  CSP break iframes, and that is not your bug.
+- HTTPS is mandatory on both sides: an HTTPS site will not embed an HTTP frame.
+- To restrict who may embed it, set `frame-ancestors 'self' https://<your-site>`
+  in Caddy instead of removing the protection.
+- File uploads are **absent** from the UI, and questions are capped by
   `DOCMIND_DEMO_MAX_QUESTION_CHARS`.
 
-Как проверить руками:
+How to check by hand:
 
-1. Откройте `https://demo.<domain>/` напрямую — список документов виден.
-2. Выберите документ, задайте вопрос — ответ приходит по токенам, видны источники.
-3. Задайте вопрос длиннее 500 символов — должно появиться предупреждение.
-4. Откройте страницу своего сайта во фрейме — интерфейс помещается, не обрезан.
-5. Отключите cookies/жёстко перезагрузите — сессия поднимается заново.
+1. Open `https://demo.<domain>/` directly — the document list is visible.
+2. Pick a document, ask a question — the answer streams token by token and the
+   sources are shown.
+3. Ask a question longer than 500 characters — a warning must appear.
+4. Open your site's page with the frame — the UI fits without being cropped.
+5. Clear cookies or hard-reload — the session comes back up.
 
 ---
 
-# Часть 13. Доказательство изоляции контуров
+# Part 13. Proving the contours are isolated
 
-Выполните после первого демо-деплоя — все четыре проверки должны пройти:
+Run this after the first demo deployment — all four checks must pass:
 
 ```bash
 set -a; . /opt/docmind/.env; set +a
 set -a; . /opt/docmind-demo/.env.demo; set +a
 
-# 1. Демо-ключ отвергается продовым API и наоборот
+# 1. The demo key is rejected by the production API and vice versa
 curl -sS -o /dev/null -w 'demo→prod: %{http_code}\n' \
   -H "X-API-Key: $API_KEY" http://127.0.0.1:8000/api/v1/documents
 ```
 
-Аккуратнее: два `.env` перетирают переменную `API_KEY`. Проверяйте так:
+Careful: the two `.env` files overwrite the `API_KEY` variable. Check it this
+way instead:
 
 ```bash
 PROD_KEY=$(grep -E '^API_KEY=' /opt/docmind/.env | cut -d= -f2-)
 DEMO_KEY=$(grep -E '^API_KEY=' /opt/docmind-demo/.env.demo | cut -d= -f2-)
 
-# один ключ не работает на чужом контуре — оба должны вернуть 401
-curl -sS -o /dev/null -w 'prod-ключ → demo-API: %{http_code}\n' \
+# a key does not work against the other contour — both must return 401
+curl -sS -o /dev/null -w 'prod key → demo API: %{http_code}\n' \
   -H "X-API-Key: $PROD_KEY" http://127.0.0.1:8001/api/v1/documents
-curl -sS -o /dev/null -w 'demo-ключ → prod-API: %{http_code}\n' \
+curl -sS -o /dev/null -w 'demo key → prod API: %{http_code}\n' \
   -H "X-API-Key: $DEMO_KEY" http://127.0.0.1:8000/api/v1/documents
 
-# 2. Разные Compose-проекты и разные тома
+# 2. Different Compose projects and different volumes
 docker ps --format '{{.Names}}' | sort
 docker volume ls | grep docmind
 docker network ls | grep docmind
 
-# 3. Ни один API-порт не опубликован наружу
+# 3. No API port is published to the outside
 sudo ss -tlnp | grep -E ':(8000|8001|8501|5432|6379)\b'
-# все строки должны быть с 127.0.0.1
+# every line must show 127.0.0.1
 
-# 4. Перезапуск демо не задел прод: время старта контейнеров прода не меняется
+# 4. Restarting the demo does not touch production: container start times stay
 docker compose -f /opt/docmind/docker-compose.prod.yml ps
 docker compose -f /opt/docmind-demo/docker-compose.demo.yml ps
 ```
 
 ---
 
-# Часть 14. Бюджет, абьюз, безопасность
+# Part 14. Budget, abuse and security
 
-## 14.1. Деньги провайдера
+## 14.1. Provider spend
 
-1. В кабинете OpenAI задайте **hard spend limit** на проект.
-2. Включите e-mail-уведомления о расходе.
-3. Держите `LLM_REASONING_EFFORT=none` (дефолт проекта): это и дешевле, и быстрее.
-4. Для демо используйте более дешёвую модель, задав `LLM_MODEL` в `.env.demo`.
+1. Set a **hard spend limit** for the project in the OpenAI dashboard.
+2. Enable e-mail notifications about spending.
+3. Keep `LLM_REASONING_EFFORT=none` (the project default): it is both cheaper and
+   faster.
+4. For the demo, use a cheaper model by setting `LLM_MODEL` in `.env.demo`.
 
-Помните: лимитер в приложении ([`src/api/deps.py`](../src/api/deps.py)) —
-**процесс-локальный** и только сглаживает пики. Настоящий потолок расходов —
-настройка аккаунта провайдера.
+Remember: the in-app limiter ([`src/api/deps.py`](../src/api/deps.py)) is
+**process-local** and only smooths spikes. The real spending ceiling is the
+provider account setting.
 
-## 14.2. Лимиты запросов
+## 14.2. Request limits
 
-| Параметр | Прод | Демо | Смысл |
+| Setting | Production | Demo | Meaning |
 | --- | --- | --- | --- |
-| `RATE_LIMIT_WINDOW_SECONDS` | 60 | 60 | окно |
-| `CHAT_RATE_LIMIT_REQUESTS` | 30 | 5 | чат на клиента за окно |
-| `UPLOAD_RATE_LIMIT_REQUESTS` | 10 | 10 | загрузки (в демо их делает только seed) |
+| `RATE_LIMIT_WINDOW_SECONDS` | 60 | 60 | window |
+| `CHAT_RATE_LIMIT_REQUESTS` | 30 | 5 | chat requests per client per window |
+| `UPLOAD_RATE_LIMIT_REQUESTS` | 10 | 10 | uploads (in the demo only the seed performs them) |
 
-Два важных нюанса:
+Two important nuances:
 
-- Лимит **на процесс**. Прод с `--workers 2` даёт фактически ×2. Демо работает
-  с одним воркером, чтобы задокументированное число совпадало с реальным.
-- Ключ лимита — адрес TCP-соединения. За прокси это docker-gateway, поэтому
-  прод/демо задают `FORWARDED_ALLOW_IPS`, а Caddy **перезаписывает**
-  `X-Forwarded-For`. Если поставить прокси, который заголовок дописывает,
-  клиент сможет подделать IP и обойти лимит.
+- The limit is **per process**. Production with `--workers 2` effectively doubles
+  it. The demo runs a single worker so the documented number matches reality.
+- The limiter keys on the TCP peer address. Behind a proxy that is the Docker
+  gateway, so production and the demo set `FORWARDED_ALLOW_IPS`, and Caddy
+  **overwrites** `X-Forwarded-For`. With a proxy that appends to the header, a
+  client could forge its IP and bypass the limit.
 
-Для жёсткого глобального лимита: `caddy-ratelimit` или CDN/WAF перед демо.
+For a hard global limit: `caddy-ratelimit` or a CDN/WAF in front of the demo.
 
-## 14.3. Гигиена секретов
+## 14.3. Secret hygiene
 
-- `.env`, `.env.demo`, `.deployed_*`, `backups*`, `*.pem`, `*.key` уже в
-  [`.gitignore`](../.gitignore); проверку на утечку делает gitleaks в
+- `.env`, `.env.demo`, `.deployed_*`, `backups*`, `*.pem`, `*.key` are already in
+  [`.gitignore`](../.gitignore); leak detection is done by gitleaks in
   [`security.yml`](../.github/workflows/security.yml).
-- Ротация `API_KEY`: сгенерируйте новый, обновите `.env` (или `.env.demo`),
-  затем перезапустите только `api worker` — миграции не требуются.
-- Ротация `POSTGRES_PASSWORD`: меняется и в `.env`, и в самой БД
-  (`ALTER USER ... PASSWORD`), затем перезапуск `api worker`.
-- Приватные ключи деплоя не переиспользуйте между контурами: если ключ утёк,
-  в GitHub достаточно заменить `SSH_KEY` и убрать старый из `authorized_keys`.
+- Rotating `API_KEY`: generate a new one, update `.env` (or `.env.demo`), then
+  restart only `api worker` — no migrations are needed.
+- Rotating `POSTGRES_PASSWORD`: change it in `.env` and in the database itself
+  (`ALTER USER ... PASSWORD`), then restart `api worker`.
+- Never reuse deploy keys between contours: if a key leaks, replacing `SSH_KEY`
+  in GitHub and removing the old entry from `authorized_keys` is enough.
 
 ---
 
-# Часть 15. Мониторинг и алерты
+# Part 15. Monitoring and alerts
 
-## 15.1. Что мониторить
+## 15.1. What to monitor
 
-| Что | Откуда | Тревога, если |
+| What | Source | Alert when |
 | --- | --- | --- |
-| Живость | `GET /health` (внешний монитор) | не 200 дольше 3 минут |
-| Готовность | `docmind_ready` == 1 | 0 больше минуты |
-| Ошибки чата | `docmind_chat_streams_total{outcome="error"}` | доля ошибок растёт |
-| Индексация | `docmind_ingestion_jobs_total{outcome="failed"}` | есть рост |
-| Задержки | `docmind_http_request_duration_seconds` | p95 растёт |
-| Ресурсы | `docker stats`, `df -h` | диск > 80% |
-| Расходы | кабинет провайдера | приближение к лимиту |
+| Liveness | `GET /health` (external monitor) | not 200 for more than 3 minutes |
+| Readiness | `docmind_ready` == 1 | 0 for more than a minute |
+| Chat errors | `docmind_chat_streams_total{outcome="error"}` | the error share grows |
+| Indexing | `docmind_ingestion_jobs_total{outcome="failed"}` | it grows |
+| Latency | `docmind_http_request_duration_seconds` | p95 grows |
+| Resources | `docker stats`, `df -h` | disk > 80% |
+| Spend | provider dashboard | approaching the cap |
 
-Имена метрик — из [`src/metrics.py`](../src/metrics.py): `docmind_http_requests_total`,
-`docmind_http_request_duration_seconds`, `docmind_chat_streams_total`,
-`docmind_ingestion_jobs_total`, `docmind_ready`, `docmind_app_info`.
+Metric names come from [`src/metrics.py`](../src/metrics.py):
+`docmind_http_requests_total`, `docmind_http_request_duration_seconds`,
+`docmind_chat_streams_total`, `docmind_ingestion_jobs_total`, `docmind_ready`,
+`docmind_app_info`.
 
-## 15.2. Быстрые команды
+## 15.2. Quick commands
 
 ```bash
-# состояние и логи
+# state and logs
 docker compose -f /opt/docmind/docker-compose.prod.yml ps
 docker compose -f /opt/docmind/docker-compose.prod.yml logs --since 30m api
 docker compose -f /opt/docmind/docker-compose.prod.yml logs --since 30m worker
 sudo journalctl -u caddy --since "30 min ago"
 
-# метрики (только с хоста или из приватной сети)
+# metrics (only from the host or a private network)
 curl -fsS http://127.0.0.1:8000/metrics | grep -E 'docmind_(ready|chat|ingestion)'
 
-# ресурсы
+# resources
 docker stats --no-stream
 df -h /var/lib/docker
 ```
 
-## 15.3. Внешний мониторинг
+## 15.3. External monitoring
 
-- Поднимите Uptime Kuma / Healthchecks на другом хосте и проверяйте
-  `https://api.<domain>/health` (он публичный по дизайну и не требует ключа).
-- Prometheus-скрейп `/metrics` настройте по loopback или из приватной сети —
-  снаружи он закрыт Caddy.
-- Логи: JSON на stderr, собирайте `journalctl`/`docker logs` через свой стек.
-  Корреляция запросов — по заголовку `X-Request-ID`, который генерирует
+- Run Uptime Kuma / Healthchecks on another host and probe
+  `https://api.<domain>/health` (it is public by design and needs no key).
+- Configure the Prometheus scrape of `/metrics` over loopback or from a private
+  network — Caddy closes it from the outside.
+- Logs: JSON on stderr; collect `journalctl`/`docker logs` with your own stack.
+  Correlate requests by the `X-Request-ID` header generated in
   [`src/main.py`](../src/main.py).
 
 ---
 
-# Часть 16. Бэкапы и восстановление
+# Part 16. Backups and restore
 
-## 16.1. Что уже автоматизировано
+## 16.1. What is already automated
 
-Перед каждым деплоем rollout делает **обязательный** `pg_dump`:
+Before every deployment the rollout performs a **mandatory** `pg_dump`:
 
 ```bash
 ls -lh /opt/docmind/backups/ | tail
 # predeploy-20261016T120000Z.sql
 ```
 
-Дамп **не сжат** — это обычный SQL. Хранятся последние `KEEP_BACKUPS=5`.
-Если `pg_dump` упал, деплой прерывается: миграции без страховки не применяются.
+The dump is **not compressed** — it is plain SQL. The last `KEEP_BACKUPS=5` are
+kept. If `pg_dump` fails, the deployment aborts: migrations are never applied
+without a safety net.
 
-## 16.2. Off-host копия
+## 16.2. Off-host copy
 
-Настройте rclone (`rclone config`) и добавьте в `.env`:
+Configure rclone (`rclone config`) and add to `.env`:
 
 ```dotenv
 BACKUP_SYNC_CMD=rclone copy --no-traverse
 ```
 
-Скрипт выполнит `rclone copy --no-traverse <backup_file>` — файл уедет в
-настроенный remote. Проверьте это явно, иначе «бэкап есть» останется надеждой.
+The script runs `rclone copy --no-traverse <backup_file>` — the file is copied to
+the configured remote. Verify it explicitly, otherwise "there is a backup" stays
+a hope.
 
-## 16.3. Ручной бэкап
+## 16.3. Manual backup
 
 ```bash
 cd /opt/docmind
@@ -1113,150 +1129,153 @@ docker compose -f docker-compose.prod.yml exec -T db \
   sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' \
   > "backups/manual-$(date -u +%Y%m%dT%H%M%SZ).sql"
 ls -lh backups | tail -n 3
-grep -c 'CREATE TABLE' backups/manual-*.sql | tail -n 1   # убедиться, что дамп не пустой
+grep -c 'CREATE TABLE' backups/manual-*.sql | tail -n 1   # make sure the dump is not empty
 ```
 
-## 16.4. Восстановление
+## 16.4. Restore
 
-Дамп содержит `CREATE TABLE` без `DROP`, поэтому восстановление идёт в **чистую**
-базу. План:
+The dump contains `CREATE TABLE` without `DROP`, so a restore targets an **empty**
+database. The plan:
 
 ```bash
 cd /opt/docmind
 set -a; . ./.env; set +a
 BACKUP=backups/predeploy-20261016T120000Z.sql
 
-# 1. Остановить трафик, чтобы никто не писал во время восстановления
+# 1. Stop traffic so nobody writes during the restore
 docker compose -f docker-compose.prod.yml stop api worker
 
-# 2. Пересоздать базу
+# 2. Recreate the database
 docker compose -f docker-compose.prod.yml exec -T db \
   sh -c 'psql -U "$POSTGRES_USER" -d postgres -c "DROP DATABASE IF EXISTS \"$POSTGRES_DB\" WITH (FORCE);"'
 docker compose -f docker-compose.prod.yml exec -T db \
   sh -c 'psql -U "$POSTGRES_USER" -d postgres -c "CREATE DATABASE \"$POSTGRES_DB\";"'
 
-# 3. Восстановить схему и данные (дамп НЕ сжат — gunzip не нужен)
+# 3. Restore the schema and the data (the dump is NOT compressed — no gunzip)
 docker compose -f docker-compose.prod.yml exec -T db \
   sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < "$BACKUP"
 
-# 4. Поднять стек и убедиться, что схема на месте
+# 4. Bring the stack up and confirm the schema is there
 docker compose -f docker-compose.prod.yml up -d --no-build api worker
 curl -fsS http://127.0.0.1:8000/health | jq .
 ```
 
-Если расширение `vector` не создалось автоматически, включите его от
-суперпользователя и повторите пункт 3:
+If the `vector` extension was not created automatically, enable it as a
+superuser and repeat step 3:
 
 ```bash
 docker compose -f docker-compose.prod.yml exec -T db \
   sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "CREATE EXTENSION IF NOT EXISTS vector;"'
 ```
 
-Восстановление демо-контура — те же команды с `-f docker-compose.demo.yml`,
-`/opt/docmind-demo` и `backups-demo`.
+Restoring the demo contour uses the same commands with `-f docker-compose.demo.yml`,
+`/opt/docmind-demo` and `backups-demo`.
 
-## 16.5. Учебная тревога
+## 16.5. Drill
 
-Раз в квартал: поднимите тестовый Postgres, восстановите последний дамп,
-убедитесь, что `alembic current` совпадает с ожидаемой ревизией и что API
-стартует против восстановленной базы. Бэкап без проверки восстановления —
-это не бэкап.
+Once a quarter: start a test Postgres, restore the latest dump, confirm that
+`alembic current` matches the expected revision and that the API starts against
+the restored database. A backup that has never been restored is not a backup.
 
 ---
 
-# Часть 17. Обновления, миграции, откат
+# Part 17. Updates, migrations, rollback
 
-## 17.1. Обычный релиз
+## 17.1. Normal release
 
-1. Смёржили PR в `main` (CI должен быть зелёным).
-2. `Release Image` собрал и опубликовал образ (и `Release Demo Image` — свой).
+1. You merged the PR into `main` (CI must be green).
+2. `Release Image` built and published the image (and `Release Demo Image` its
+   own).
 3. Actions → `Deploy Production` → **Approve**.
-4. Rollout: бэкап → миграции → рестарт `api worker` → health → state.
-5. Демо подтянется автоматически (`Deploy Demo`), затем выполнится seed.
+4. Rollout: backup → migrations → restart `api worker` → health → state.
+5. The demo follows automatically (`Deploy Demo`), then the seed runs.
 
-## 17.2. Миграции: только expand/contract
+## 17.2. Migrations: expand/contract only
 
-Схема **не откатывается** вместе с образом. Правило: каждый релиз должен быть
-совместим и со старой, и с новой версией схемы.
+The schema is **not** rolled back together with the image. Rule: every release
+must be compatible with both the old and the new schema version.
 
-| Плохо | Хорошо |
+| Bad | Good |
 | --- | --- |
-| Переименовать колонку в одном релизе | Добавить новую → писать в обе → перенести данные → убрать старую в следующем релизе |
-| Добавить `NOT NULL` без дефолта | Добавить с дефолтом, затем убрать дефолт |
-| Удалить таблицу, пока жив старый код | Сначала выкатить код без обращений, потом удалять |
+| Renaming a column in one release | Add a new one → write to both → migrate the data → drop the old one in the next release |
+| Adding `NOT NULL` without a default | Add it with a default, then drop the default |
+| Dropping a table while old code is still live | Ship code without those reads first, then drop |
 
-Проверяйте локально: `alembic upgrade head && alembic check` — то же делает CI.
+Verify locally: `alembic upgrade head && alembic check` — CI does the same.
 
-## 17.3. Автоматический откат
+## 17.3. Automatic rollback
 
-Если `/health` не поднялся за 3 минуты, скрипт попытается вернуть предыдущий
-тег из `.deployed_image_tag` — **но только если** этот образ знает текущую
-ревизию БД (`alembic history` содержит её). Иначе он откажется и попросит
-ручного вмешательства: откат «вслепую» превратит API в crash-loop.
+If `/health` does not come up within 3 minutes, the script tries to restore the
+previous tag from `.deployed_image_tag` — **but only if** that image understands
+the current database revision (`alembic history` contains it). Otherwise it
+refuses and asks for manual intervention: a blind rollback turns the API into a
+crash loop.
 
-## 17.4. Ручной откат
+## 17.4. Manual rollback
 
 ```bash
-# вариант 1: перезапустить rollout на предыдущем теге
-# Actions → Deploy Production → Run workflow → image_tag: <предыдущий-тег>
+# option 1: re-run the rollout with the previous tag
+# Actions → Deploy Production → Run workflow → image_tag: <previous-tag>
 
-# вариант 2: на сервере
+# option 2: on the server
 cd /opt/docmind
-# посмотреть, что было задеплоено
+# see what was deployed
 cat .deployed_image_tag
-# отредактировать state и перезапустить сервисы вручную
-echo "<предыдущий-тег>" > .deployed_image_tag
+# edit the state and restart the services by hand
+echo "<previous-tag>" > .deployed_image_tag
 ```
 
-Откат **схемы** возможен только восстановлением дампа (см. часть 16) плюс
-выкатка старого образа. Поэтому бэкап перед каждым деплоем безусловен.
+Rolling back the **schema** is only possible by restoring a dump (see part 16)
+plus shipping the old image. That is why a backup before every deployment is
+unconditional.
 
-## 17.5. Откат демо
+## 17.5. Rolling back the demo
 
-То же самое, но: `DEPLOY_PATH=/opt/docmind-demo`, state-файл
-`.deployed_demo_image_tag`, бэкапы в `backups-demo`. Откат демо не влияет на прод.
+The same procedure, but with `DEPLOY_PATH=/opt/docmind-demo`, the state file
+`.deployed_demo_image_tag` and backups in `backups-demo`. Rolling back the demo
+does not affect production.
 
 ---
 
-# Часть 18. Регулярные операции
+# Part 18. Routine operations
 
-## 18.1. Что происходит само
+## 18.1. What happens on its own
 
-- **Dependabot**: PR по pip / actions / docker.
+- **Dependabot**: PRs for pip / actions / docker.
 - **Weekly Trivy**: [`security.yml`](../.github/workflows/security.yml).
-- **APT_CACHE_BUST**: при каждом релизе пересобирается apt-слой, поэтому образ
-  не тянет старые патчи Debian.
-- **Pre-deploy backup**: перед каждой миграцией.
-- **Retention бэкапов**: хранится последние 5.
+- **APT_CACHE_BUST**: the apt layer is rebuilt on every release, so the image
+  never carries stale Debian patches.
+- **Pre-deploy backup**: before every migration.
+- **Backup retention**: the last 5 are kept.
 
-## 18.2. Что делать руками
+## 18.2. What to do by hand
 
-| Периодичность | Действие |
+| Cadence | Action |
 | --- | --- |
-| Еженедельно | просмотреть PR Dependabot; `docker system df`; проверить алерты |
-| Ежемесячно | `sudo apt upgrade -y`, перезагрузка при обновлении ядра; `docker image prune -f`; проверить свободное место |
-| Ежеквартально | восстановление дампа на тестовом контейнере; ротация `API_KEY`; ротация PAT GHCR |
-| При инциденте | ротация затронутых секретов; аудит `journalctl`/логов Caddy по `X-Request-ID` |
+| Weekly | Review Dependabot PRs; `docker system df`; check the alerts |
+| Monthly | `sudo apt upgrade -y`, reboot when the kernel is updated; `docker image prune -f`; check free space |
+| Quarterly | Restore a dump on a test container; rotate `API_KEY`; rotate the GHCR PAT |
+| On an incident | Rotate the affected secrets; audit `journalctl`/Caddy logs by `X-Request-ID` |
 
-## 18.3. Обслуживание диска
+## 18.3. Disk maintenance
 
 ```bash
 df -h
 docker system df
-docker image prune -f          # безопасно: уберёт неиспользуемые образы
-docker builder prune -f        # кэш сборки
+docker image prune -f          # safe: removes unused images
+docker builder prune -f        # build cache
 ls -lh /opt/docmind/backups /opt/docmind-demo/backups-demo
 ```
 
-> `docker volume prune` **не запускайте**: он может удалить `docmind-prod_pg_data`.
-> Для удаления тома указывайте имя явно, как в разделе про сброс демо.
+> Do **not** run `docker volume prune`: it can delete `docmind-prod_pg_data`.
+> To remove a volume, name it explicitly, as in the demo reset section.
 
 ---
 
-# Приложение A. Шпаргалка команд
+# Appendix A. Command cheat sheet
 
 ```bash
-# --- Прод ---
+# --- Production ---
 cd /opt/docmind
 set -a; . ./.env; set +a
 docker compose -f docker-compose.prod.yml ps
@@ -1264,7 +1283,7 @@ docker compose -f docker-compose.prod.yml logs -f api
 docker compose -f docker-compose.prod.yml restart api worker
 curl -fsS http://127.0.0.1:8000/health | jq .
 
-# --- Демо ---
+# --- Demo ---
 cd /opt/docmind-demo
 set -a; . ./.env.demo; set +a
 docker compose -f docker-compose.demo.yml ps
@@ -1275,103 +1294,103 @@ curl -fsS http://127.0.0.1:8001/health | jq .
 sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy && sudo journalctl -u caddy -n 30 --no-pager
 
-# --- Публичные проверки ---
+# --- Public checks ---
 curl -sS https://api.<domain>/health | jq .
 curl -sS -H "X-API-Key: $API_KEY" https://api.<domain>/api/v1/documents | jq .
 curl -sSI https://demo.<domain>/ | head -n 3
 ```
 
-# Приложение B. Переменные окружения
+# Appendix B. Environment variables
 
-| Переменная | Обязательна | Где | Назначение |
+| Variable | Required | Where | Purpose |
 | --- | --- | --- | --- |
-| `POSTGRES_USER/PASSWORD/DB` | да | оба `.env` | креды БД (compose их требует) |
-| `REDIS_PASSWORD` | да | оба `.env` | включает `requirepass` |
-| `API_KEY` | да в проде | оба `.env` | ключ всех `/api/v1/*`; в демо — отдельный |
-| `EMBEDDING_DIM` | да | оба `.env` | ширина вектора; должен совпасть с моделью и миграцией |
-| `CORS_ORIGINS` | да | оба `.env` | явный список, не `*` |
-| `OPENAI_API_KEY` | при `openai` | оба `.env` | доступ к провайдеру |
-| `ENVIRONMENT` | — | compose | `production` включает строгую политику |
-| `ENABLE_DOCS` | — | оба `.env` | Swagger; в проде `False` |
-| `METRICS_ENABLED` | — | оба `.env` | включает `/metrics` |
-| `MAX_UPLOAD_MB` | — | оба `.env` | лимит файла (25 по умолчанию) |
-| `LLM_MODEL` / `EMBEDDING_MODEL` | — | оба `.env` | переопределение модели |
-| `LLM_REASONING_EFFORT` | — | оба `.env` | `none` по умолчанию: дешевле |
-| `RATE_LIMIT_*` | — | оба `.env` | лимиты per-client |
-| `FORWARDED_ALLOW_IPS` | — | compose | доверенные адреса для `X-Forwarded-For` |
-| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | — | оба `.env` | размер пула (см. формулу) |
-| `BACKUP_SYNC_CMD` | — | прод | выгрузка бэкапов off-host |
-| `DOCMIND_PUBLIC_API_URL` | да в демо | `.env.demo` | публичный origin демо |
-| `DOCMIND_DEMO_MODE` | — | compose | read-only режим UI |
-| `DOCMIND_DEMO_MAX_QUESTION_CHARS` | — | `.env.demo` | лимит длины вопроса |
-| `DOCMIND_DEMO_TOP_K` | — | `.env.demo` | фиксированный `top_k` |
-| `SEED_WAIT_SECONDS` | — | `.env.demo` | бюджет ожидания индексации |
-| `TRAFFIC_SERVICES` | — | workflow | какие сервисы переключать |
-| `POST_DEPLOY_CMD` | — | workflow | хук после health (seed) |
+| `POSTGRES_USER/PASSWORD/DB` | yes | both `.env` files | database credentials (Compose requires them) |
+| `REDIS_PASSWORD` | yes | both `.env` files | enables `requirepass` |
+| `API_KEY` | yes in production | both `.env` files | key for all of `/api/v1/*`; a separate one in the demo |
+| `EMBEDDING_DIM` | yes | both `.env` files | vector width; must match the model and the migration |
+| `CORS_ORIGINS` | yes | both `.env` files | explicit list, not `*` |
+| `OPENAI_API_KEY` | with `openai` | both `.env` files | provider access |
+| `ENVIRONMENT` | — | compose | `production` enables the strict policy |
+| `ENABLE_DOCS` | — | both `.env` files | Swagger; `False` in production |
+| `METRICS_ENABLED` | — | both `.env` files | enables `/metrics` |
+| `MAX_UPLOAD_MB` | — | both `.env` files | file size limit (25 by default) |
+| `LLM_MODEL` / `EMBEDDING_MODEL` | — | both `.env` files | model override |
+| `LLM_REASONING_EFFORT` | — | both `.env` files | `none` by default: cheaper |
+| `RATE_LIMIT_*` | — | both `.env` files | per-client limits |
+| `FORWARDED_ALLOW_IPS` | — | compose | trusted addresses for `X-Forwarded-For` |
+| `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` | — | both `.env` files | pool size (see the formula) |
+| `BACKUP_SYNC_CMD` | — | production | off-host backup upload |
+| `DOCMIND_PUBLIC_API_URL` | yes in the demo | `.env.demo` | public origin of the demo |
+| `DOCMIND_DEMO_MODE` | — | compose | read-only mode of the UI |
+| `DOCMIND_DEMO_MAX_QUESTION_CHARS` | — | `.env.demo` | question length limit |
+| `DOCMIND_DEMO_TOP_K` | — | `.env.demo` | fixed `top_k` |
+| `SEED_WAIT_SECONDS` | — | `.env.demo` | indexing wait budget |
+| `TRAFFIC_SERVICES` | — | workflow | which services to switch |
+| `POST_DEPLOY_CMD` | — | workflow | post-health hook (seed) |
 
-# Приложение C. Чек-листы
+# Appendix C. Checklists
 
-**Перед первым деплоем**
+**Before the first deployment**
 
-- [ ] `ufw` включён: только 22/80/443.
-- [ ] Docker работает под `deploy` без sudo.
-- [ ] A-записи `api.` и `demo.` разрешаются в `<VPS_IP>`.
-- [ ] `/opt/docmind/.env` создан, `chmod 600`, `DATABASE_URL`/`REDIS_URL` не localhost.
-- [ ] GitHub: environment `production` с ревьюерами, `SSH_*`, `GHCR_*`, `DEPLOY_PATH=/opt/docmind`.
-- [ ] CI зелёный на `main`, образы опубликованы.
-- [ ] Лимит расходов в кабинете провайдера задан.
+- [ ] `ufw` is enabled: only 22/80/443.
+- [ ] Docker works as `deploy` without sudo.
+- [ ] The `api.` and `demo.` A records resolve to `<VPS_IP>`.
+- [ ] `/opt/docmind/.env` exists, `chmod 600`, `DATABASE_URL`/`REDIS_URL` are not localhost.
+- [ ] GitHub: the `production` environment with reviewers, `SSH_*`, `GHCR_*`, `DEPLOY_PATH=/opt/docmind`.
+- [ ] CI is green on `main`, the images are published.
+- [ ] The spend limit is set in the provider dashboard.
 
-**После каждого прод-деплоя**
+**After every production deployment**
 
 - [ ] `/health` → `status: healthy`, `database: true`, `redis: true`.
-- [ ] `/api/v1/documents` без ключа → 401, с ключом → 200.
-- [ ] `.deployed_image_tag` совпадает с выкатанным тегом и **не** равен `latest`.
-- [ ] `.deployed_image_ref` содержит `@sha256:` (образ запинен по digest).
-- [ ] В логах `api`/`worker` нет повторяющихся исключений.
-- [ ] Новый бэкап появился в `backups/`.
+- [ ] `/api/v1/documents` without a key → 401, with a key → 200.
+- [ ] `.deployed_image_tag` matches the deployed tag and is **not** `latest`.
+- [ ] `.deployed_image_ref` contains `@sha256:` (the image is pinned by digest).
+- [ ] The `api`/`worker` logs show no repeating exceptions.
+- [ ] A new backup appeared in `backups/`.
 
-**Перед публикацией ссылки на демо**
+**Before publishing the demo link**
 
-- [ ] UI открывается, документы видны, загрузки нет.
-- [ ] Ответ стримится токенами, источники показываются.
-- [ ] Вопрос длиннее лимита получает предупреждение.
-- [ ] `/metrics` снаружи даёт 404.
-- [ ] Демо-ключ не действует против прод-API (401).
-- [ ] На iframe есть запасная ссылка.
+- [ ] The UI opens, documents are visible, there is no upload.
+- [ ] The answer streams token by token and the sources are shown.
+- [ ] A question longer than the limit gets a warning.
+- [ ] `/metrics` returns 404 from the outside.
+- [ ] The demo key does not work against the production API (401).
+- [ ] The iframe has a fallback link.
 
-**Квартально**
+**Quarterly**
 
-- [ ] Восстановление из дампа проверено на тестовом контейнере.
-- [ ] Ротация `API_KEY` (прод и демо отдельно).
-- [ ] Ротация GHCR PAT.
-- [ ] `df -h` и `docker system df` в норме.
-- [ ] Проверены алерты мониторинга (сработают ли на самом деле).
+- [ ] Restore from a dump has been verified on a test container.
+- [ ] `API_KEY` rotation (production and demo separately).
+- [ ] GHCR PAT rotation.
+- [ ] `df -h` and `docker system df` are healthy.
+- [ ] The monitoring alerts were exercised (do they actually fire?).
 
-# Приложение C.1. Ручные команды на сервере
+# Appendix C.1. Manual commands on the server
 
-`docker-compose.prod.yml` подставляет образ как `${DOCMIND_IMAGE_REF:?...}`, то
-есть требует ссылку вида `repo@sha256:<digest>`. Rollout экспортирует её только
-внутри своего процесса, поэтому ручной `docker compose ...` в свежей сессии
-падает:
+`docker-compose.prod.yml` interpolates the image as
+`${DOCMIND_IMAGE_REF:?...}`, so it requires a reference of the form
+`repo@sha256:<digest>`. The rollout exports it only inside its own process, so a
+manual `docker compose ...` in a fresh session fails:
 
 ```
 error while interpolating services.api.image: required variable DOCMIND_IMAGE_REF
 is missing a value: set DOCMIND_IMAGE_REF to repo@sha256:<digest>
 ```
 
-Поэтому rollout пишет рядом файлы состояния, пригодные для подключения как
+That is why the rollout writes state files next to it that are safe to source as
 shell:
 
-| Файл | Содержимое |
+| File | Contents |
 | --- | --- |
-| `.deployed_image_tag` | тег последнего успешного прод-деплоя |
-| `.deployed_demo_image_tag` | тег последнего успешного демо-деплоя (`STATE_FILE` демо-контура) |
-| `.deployed_image_ref` | `DOCMIND_IMAGE_REF=repo@sha256:…`; в демо ещё `DOCMIND_DEMO_IMAGE_REF` |
+| `.deployed_image_tag` | tag of the last successful production deployment |
+| `.deployed_demo_image_tag` | tag of the last successful demo deployment (the demo `STATE_FILE`) |
+| `.deployed_image_ref` | `DOCMIND_IMAGE_REF=repo@sha256:…`; the demo file also has `DOCMIND_DEMO_IMAGE_REF` |
 
-Ручные команды выполняются через обёртку `.github/deploy/stack.sh`, которую
-rollout копирует в каталог контура вместе с Compose-файлом. Она подхватывает
-`.deployed_image_ref`, сама добавляет `--env-file .env.demo` в демо-контуре и
-передаёт остальные аргументы в `docker compose`:
+Manual commands go through the `.github/deploy/stack.sh` wrapper, which the
+rollout copies into the contour directory together with the Compose file. It
+loads `.deployed_image_ref`, adds `--env-file .env.demo` in the demo contour and
+forwards the remaining arguments to `docker compose`:
 
 ```bash
 cd /opt/docmind
@@ -1380,8 +1399,8 @@ bash .github/deploy/stack.sh logs --tail=50 api worker
 bash .github/deploy/stack.sh config --quiet
 ```
 
-Демо-контур — то же самое из `/opt/docmind-demo` (обёртка определяет контур по
-Compose-файлу, а не по имени каталога):
+The demo contour is the same from `/opt/docmind-demo` (the wrapper detects the
+contour by the Compose file, not by the directory name):
 
 ```bash
 cd /opt/docmind-demo
@@ -1389,8 +1408,8 @@ bash .github/deploy/stack.sh ps
 bash .github/deploy/stack.sh --profile seed run --rm demo-seed
 ```
 
-Если обёртки на сервере ещё нет (деплой был до её появления), сделайте то же
-вручную:
+If the wrapper is not on the server yet (the deployment predates it), do the same
+by hand:
 
 ```bash
 cd /opt/docmind
@@ -1399,67 +1418,68 @@ docker compose -f docker-compose.prod.yml ps
 docker compose -f docker-compose.prod.yml logs --tail=50 api worker
 ```
 
-Если файла ещё нет (деплой выполнялся до его появления), ссылку можно взять из
-работающего контейнера — она уже записана там как digest:
+If the file does not exist yet (the deployment predates it), the reference can be
+recovered from the running container — it is already recorded there as a digest:
 
 ```bash
 export DOCMIND_IMAGE_REF="$(docker inspect --format '{{.Config.Image}}' docmind-prod-api-1)"
 ```
 
-Демо-контур: `cd /opt/docmind-demo` и то же самое; в его файле будет ещё
+Demo contour: `cd /opt/docmind-demo` and the same; its file also contains
 `DOCMIND_DEMO_IMAGE_REF`.
 
-> Не подключайте через `source` сам `.env`: это формат Compose, а не shell.
-> Значения с пробелами без кавычек (например `BACKUP_SYNC_CMD=rclone copy …`)
-> выполнятся как команды, а `$(...)` внутри значения — как подстановка.
+> Do not `source` `.env` itself: it is Compose format, not shell. Unquoted values
+> with spaces (for example `BACKUP_SYNC_CMD=rclone copy …`) would run as commands,
+> and `$(...)` inside a value would be expanded.
 
-Если `.deployed_image_tag` всё же оказался `latest`, состояние не
-воспроизводимо: повторный `docker compose ... up` возьмёт текущий `latest`, а не
-выкатанный образ. Перезапустите деплой с `sha-<commit>` или с релизным тегом
-`vX.Y.Z` — rollout пишет предупреждение, когда тег мутабельный.
+If `.deployed_image_tag` is `latest` anyway, the state is not reproducible:
+another `docker compose ... up` would pick the current `latest`, not the image
+that was deployed. Re-run the deployment with `sha-<commit>` or a release tag
+`vX.Y.Z` — the rollout warns when a tag is mutable.
 
-# Приложение D. Диагностика
+# Appendix D. Diagnostics
 
-| Симптом | Вероятная причина | Что делать |
+| Symptom | Likely cause | What to do |
 | --- | --- | --- |
-| Rollout: «DATABASE_URL points at localhost» | строка DSN в `.env` | удалите `DATABASE_URL`/`REDIS_URL`, оставьте `POSTGRES_*`/`REDIS_*` |
-| `/health` → 503, `database: false` | БД не поднялась | `docker compose ps`, логи `db`, проверьте пароль |
-| `/health` → 503, `provider_ready: false` | нет/неверный `OPENAI_API_KEY` | проверьте ключ и лимиты провайдера |
-| API не стартует, в логах про `EMBEDDING_DIM` | рассинхрон модели, `.env` и миграции | приведите `EMBEDDING_DIM` в соответствие (openai → 1536) |
-| `Can't locate revision` при старте | образ старше миграции БД | выкатите совместимый образ, иначе восстановите дамп |
-| 401 на все вызовы | неверный/просроченный `API_KEY` | сверьте ключ в `.env` у демо/прода — они разные |
-| 429 при обычной работе | per-client лимит | проверьте `FORWARDED_ALLOW_IPS` и заголовок `X-Forwarded-For` |
-| SSE приходит одним блоком | прокси буферизует | в Caddy `flush_interval -1` на `/api/v1/chat/completions` |
-| Демо: «corpus is still empty» | seed не выполнялся | запустите `--profile seed run --rm demo-seed` и посмотрите вывод |
-| Seed: `... rate limited` | мало `UPLOAD_RATE_LIMIT_REQUESTS` | скрипт ждёт по `Retry-After`; поднимите лимит или подождите |
-| Пустой iframe | фрейминг, CSP или mixed content | уберите `X-Frame-Options`, настройте `frame-ancestors`, используйте HTTPS |
-| Демо: первый визит ~15 s, в HAR нет `Content-Encoding` | у демо-вхоста нет сжатия | включите `encode zstd gzip` (Caddy) или `gzip on` (nginx); цель — см. baseline в [`docs/DEMO.md`](DEMO.md:229) |
-| Caddy: 502 Bad Gateway | Caddy старше контейнеров | `docker compose ps`; дождитесь health, затем reload Caddy |
-| ACME не выпускает сертификат | DNS/порты/лимиты CA | см. таблицу в части 10.4 |
-| Диск заполнен | логи/образы/тома | `docker system df`, `journalctl --vacuum-size=200M`, prune образов |
-| Worker не обрабатывает документы | Redis недоступен или падает задача | логи `worker`, `docmind_ingestion_jobs_total`, проверьте `REDIS_PASSWORD` |
+| Rollout: "DATABASE_URL points at localhost" | a DSN line in `.env` | delete `DATABASE_URL`/`REDIS_URL`, keep `POSTGRES_*`/`REDIS_*` |
+| `/health` → 503, `database: false` | the database did not come up | `docker compose ps`, `db` logs, check the password |
+| `/health` → 503, `provider_ready: false` | missing or invalid `OPENAI_API_KEY` | check the key and the provider limits |
+| The API will not start, the logs mention `EMBEDDING_DIM` | the model, `.env` and the migration disagree | align `EMBEDDING_DIM` (openai → 1536) |
+| `Can't locate revision` at startup | the image predates the database migration | deploy a compatible image, otherwise restore a dump |
+| 401 on every call | wrong or expired `API_KEY` | compare the key in the demo/production `.env` — they differ |
+| 429 during normal work | the per-client limit | check `FORWARDED_ALLOW_IPS` and the `X-Forwarded-For` header |
+| SSE arrives as one block | the proxy buffers | in Caddy set `flush_interval -1` on `/api/v1/chat/completions` |
+| Demo: "corpus is still empty" | the seed never ran | run `--profile seed run --rm demo-seed` and read the output |
+| Seed: `... rate limited` | `UPLOAD_RATE_LIMIT_REQUESTS` is too low | the script waits per `Retry-After`; raise the limit or wait |
+| Empty iframe | framing, CSP or mixed content | remove `X-Frame-Options`, configure `frame-ancestors`, use HTTPS |
+| Demo: first visit ~15 s, no `Content-Encoding` in the HAR | the demo vhost has no compression | enable `encode zstd gzip` (Caddy) or `gzip on` (nginx); for the target see the baseline in [`docs/DEMO.md`](DEMO.md:229) |
+| Caddy: 502 Bad Gateway | Caddy is older than the containers | `docker compose ps`; wait for health, then reload Caddy |
+| ACME does not issue a certificate | DNS/ports/CA limits | see the table in part 10.4 |
+| Disk full | logs/images/volumes | `docker system df`, `journalctl --vacuum-size=200M`, prune images |
+| The worker does not process documents | Redis is unreachable or the job crashes | `worker` logs, `docmind_ingestion_jobs_total`, check `REDIS_PASSWORD` |
 
-# Приложение E. Сценарии аварий
+# Appendix E. Incident scenarios
 
-**Полностью недоступен прод-API.** Caddy отдаёт 502 → `docker compose ps`;
-проверьте `/health` на loopback; если контейнер в рестарт-цикле — логи, затем
-ручной откат на предыдущий тег (часть 17.4).
+**The production API is completely unreachable.** Caddy returns 502 →
+`docker compose ps`; check `/health` on loopback; if the container is in a restart
+loop, read the logs, then roll back manually to the previous tag (part 17.4).
 
-**Испорчена схема/данные.** Остановите `api worker`, восстановите последний
-дамп (часть 16.4), выкатите образ, совместимый с этой ревизией.
+**The schema or data is corrupted.** Stop `api worker`, restore the latest dump
+(part 16.4), and deploy an image compatible with that revision.
 
-**Утёк `API_KEY`.** Сгенерируйте новый, обновите `.env` (и `.env.demo` отдельно),
-перезапустите `api worker`. Старый ключ немедленно перестанет работать. Если
-утекло у демо — поменяйте только его, прод не трогайте.
+**`API_KEY` leaked.** Generate a new one, update `.env` (and `.env.demo`
+separately), restart `api worker`. The old key stops working immediately. If the
+demo key leaked, rotate only that one and leave production alone.
 
-**Утёк ключ провайдера.** Отзовите его в кабинете, создайте новый, обновите
-`OPENAI_API_KEY` в обоих `.env`, перезапустите `api worker`.
+**The provider key leaked.** Revoke it in the dashboard, create a new one, update
+`OPENAI_API_KEY` in both `.env` files, restart `api worker`.
 
-**Демо атакуют / расходы растут.** Понизьте `CHAT_RATE_LIMIT_REQUESTS`, при
-необходимости временно остановите UI (`docker compose -f docker-compose.demo.yml stop demo`) —
-API при этом останется для seed — и разбирайтесь по логам Caddy (`client_ip`,
-`X-Request-ID`). Прод при этом не затронут.
+**The demo is under attack / spend is growing.** Lower
+`CHAT_RATE_LIMIT_REQUESTS`; if necessary stop the UI temporarily
+(`docker compose -f docker-compose.demo.yml stop demo`) — the API stays up for the
+seed — and investigate through the Caddy logs (`client_ip`, `X-Request-ID`).
+Production is not affected.
 
-**Упал диск VPS.** Поднимите новый сервер, повторите части 2–5, восстановите
-дампы из off-host хранилища, задеплойте тот же тег из `.deployed_image_tag`.
-DNS-переключение — единственное, что нужно поменять снаружи.
+**The VPS disk died.** Bring up a new server, repeat parts 2–5, restore the dumps
+from off-host storage, and deploy the same tag from `.deployed_image_tag`. The DNS
+switch is the only thing that has to change outside.
