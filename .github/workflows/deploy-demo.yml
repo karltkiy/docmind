@@ -144,7 +144,12 @@ jobs:
             # idempotent (already-indexed documents are skipped) and exits
             # non-zero if indexing fails, so a broken corpus fails the rollout
             # instead of silently publishing an empty demo.
-            export POST_DEPLOY_CMD="docker compose -f docker-compose.demo.yml --profile seed run --rm demo-seed"
+            #
+            # --env-file is mandatory here: this command runs in its own Compose
+            # invocation, and without the flag Compose cannot resolve the
+            # ${VAR:?...} entries of docker-compose.demo.yml from .env.demo
+            # (a file named `.env` is the only one it loads on its own).
+            export POST_DEPLOY_CMD="docker compose -f docker-compose.demo.yml --env-file .env.demo --profile seed run --rm demo-seed"
             bash .github/deploy/remote-deploy.sh
 
       - name: Deployment summary

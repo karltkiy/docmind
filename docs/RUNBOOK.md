@@ -831,6 +831,17 @@ SEED_WAIT_SECONDS=180
 chmod 600 /opt/docmind-demo/.env.demo
 ```
 
+> **Почему `--env-file .env.demo` обязателен в каждой команде.**
+> Compose подставляет `${VAR:?...}` только из окружения процесса, из файла,
+> переданного через `--env-file`, либо из файла с именем ровно `.env` в каталоге
+> проекта. Секции `env_file:` в [`docker-compose.demo.yml`](../docker-compose.demo.yml)
+> наполняют окружение контейнеров и применяются **после** интерполяции, поэтому
+> сами по себе они `POSTGRES_PASSWORD`/`API_KEY`/`REDIS_PASSWORD` не разрешают.
+> Прод-контур маскировал это совпадением `ENV_FILE=.env` с автозагружаемым
+> файлом; для демо без флага Compose печатает по одной ошибке
+> `required variable … is missing a value` на каждый сервис. Скрипт деплоя
+> передаёт флаг сам, в ручных командах его нужно указывать явно.
+
 ## 11.3. Деплой демо
 
 Автоматически после успешного `Release Demo Image`, либо вручную:
@@ -846,7 +857,13 @@ Actions → **Deploy Demo** → Run workflow → `image_tag`.
 | `BACKUP_DIR` | `backups-demo` |
 | `HEALTH_URL` | `http://localhost:8001/health` |
 | `TRAFFIC_SERVICES` | `api worker demo` |
-| `POST_DEPLOY_CMD` | `docker compose -f docker-compose.demo.yml --profile seed run --rm demo-seed` |
+| `POST_DEPLOY_CMD` | `docker compose -f docker-compose.demo.yml --env-file .env.demo --profile seed run --rm demo-seed` |
+
+Скрипт [`remote-deploy.sh`](../.github/deploy/remote-deploy.sh) добавляет
+`--env-file "${ENV_FILE}"` во все свои вызовы Compose и перед `docker login`
+выполняет `compose config --quiet`: если `.env.demo` нет, он не читается или в
+нём не хватает переменной, роллаут падает с внятным сообщением, не трогая
+работающий контур.
 
 ## 11.4. Проверка демо
 
@@ -869,7 +886,8 @@ curl -fsS -H "X-API-Key: $API_KEY" http://127.0.0.1:8001/api/v1/documents \
 
 ```bash
 cd /opt/docmind-demo
-docker compose -f docker-compose.demo.yml --profile seed run --rm demo-seed
+docker compose -f docker-compose.demo.yml --env-file .env.demo \
+  --profile seed run --rm demo-seed
 ```
 
 Скрипт идемпотентен: уже проиндексированные по имени файла документы он
@@ -879,7 +897,7 @@ docker compose -f docker-compose.demo.yml --profile seed run --rm demo-seed
 
 ```bash
 cd /opt/docmind-demo
-docker compose -f docker-compose.demo.yml down
+docker compose -f docker-compose.demo.yml --env-file .env.demo down
 docker volume rm docmind-demo_demo_pg_data docmind-demo_demo_uploads
 # следующий деплой создаст схему заново и наполнит корпус
 ```

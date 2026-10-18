@@ -55,6 +55,27 @@ export DOCMIND_IMAGE
 
 log() { printf '[deploy] %s\n' "$*"; }
 
+# Compose interpolates ${VAR:?...} from exactly three places: the process
+# environment, a file passed with --env-file, and a file literally named `.env`
+# in the project directory. The production contour uses the default ENV_FILE=.env
+# and therefore worked through that last rule alone; a retargeted contour
+# (ENV_FILE=.env.demo) had every required variable reported as missing even
+# though the file was present, readable and correctly spelled. Refuse to start
+# with an actionable message rather than one "required variable ... is missing"
+# error per service.
+if [[ ! -f "${ENV_FILE}" ]]; then
+    log "FATAL: ${ROOT_DIR}/${ENV_FILE} does not exist."
+    log "       Compose resolves \${VAR:?...} from this file; create it on the"
+    log "       server before deploying (see .env.example)."
+    exit 1
+fi
+if [[ ! -r "${ENV_FILE}" ]]; then
+    log "FATAL: ${ROOT_DIR}/${ENV_FILE} is not readable by $(id -un)."
+    log "       Fix ownership/permissions, e.g.:"
+    log "       sudo chown $(id -un) ${ENV_FILE} && chmod 600 ${ENV_FILE}"
+    exit 1
+fi
+
 # A tag identifies a single build only while it cannot be repointed: that is the
 # release workflow's "sha-<commit>" form, or a semver release tag. Mutable tags
 # ("latest", "main", "1.2") make the recorded state ambiguous, and an automatic
@@ -103,7 +124,11 @@ if [[ "${OLLAMA_ENABLED}" == "1" ]]; then
 fi
 
 compose() {
-    docker compose -f "${COMPOSE_FILE}" ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} "$@"
+    # --env-file is what makes ${VAR:?...} resolvable. The `env_file:` entries in
+    # the service definitions only populate container environments and are
+    # applied after interpolation, so they cannot satisfy a required variable.
+    docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" \
+        ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} "$@"
 }
 
 previous_tag="$(cat "${STATE_FILE}" 2>/dev/null || true)"
@@ -245,6 +270,17 @@ if [[ -n "${DOCMIND_DEMO_IMAGE:-}" ]]; then
     export DOCMIND_DEMO_IMAGE_REF
     log "deploying second image ${DOCMIND_DEMO_IMAGE_REF}"
 fi
+
+# ---------------------------------------------------------------------------
+# 1b. Validate the rendered Compose model before touching any state
+# ---------------------------------------------------------------------------
+# Placed after the digests are known (the model needs DOCMIND_IMAGE_REF and, for
+# the demo contour, DOCMIND_DEMO_IMAGE_REF) but before db/redis are started: a
+# missing or misspelled variable in ${ENV_FILE} aborts here, printing the same
+# message a manual `docker compose config` would, instead of half-recreating a
+# running stack.
+log "validating the Compose model (${COMPOSE_FILE} + ${ENV_FILE})"
+compose config --quiet
 
 # ---------------------------------------------------------------------------
 # 2. Ensure backing services are healthy
