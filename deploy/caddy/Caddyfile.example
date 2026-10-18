@@ -17,7 +17,9 @@
 {
 	# Contact address for ACME (certificate expiry notices).
 	email admin@example.com
-	# HTTP/3 is opt-in and needs 443/udp open as well:
+	# HTTP/3 is on by default (the listener advertises `alt-svc: h3=":443"`),
+	# so open 443/udp as well or browsers will fall back to h2 after a wasted
+	# QUIC attempt. The block below only pins an explicit protocol set.
 	# servers {
 	# 	protocols h1 h2 h3
 	# }
@@ -33,8 +35,15 @@ api.example.com {
 		max_size 30MB
 	}
 
+	# Rotation matters on a public host: certificate transparency publishes the
+	# name within minutes of the first request, and internet scanners then probe
+	# it continuously (`/.env`, `/.git/config`, `/wp-json/`), so an unrotated
+	# access log grows without bound.
 	log {
-		output file /var/log/caddy/docmind-api.log
+		output file /var/log/caddy/docmind-api.log {
+			roll_size 50MB
+			roll_keep 5
+		}
 		format json
 	}
 
@@ -94,7 +103,10 @@ api.example.com {
 # ---------------------------------------------------------------------------
 demo.example.com {
 	log {
-		output file /var/log/caddy/docmind-demo.log
+		output file /var/log/caddy/docmind-demo.log {
+			roll_size 50MB
+			roll_keep 5
+		}
 		format json
 	}
 

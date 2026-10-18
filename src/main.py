@@ -172,12 +172,20 @@ async def root() -> RootResponse:
     )
 
 
+# HEAD is registered separately and kept out of the OpenAPI schema: FastAPI would
+# otherwise emit the same operation id twice, and monitors/load balancers that
+# probe with a bodyless request must not see a 405.
+@app.head("/health", include_in_schema=False)
 @app.get(
     "/health",
     tags=["meta"],
     response_model=HealthResponse,
     summary="Liveness and dependency health",
-    description="Report liveness together with PostgreSQL and Redis reachability.",
+    description=(
+        "Report liveness together with PostgreSQL and Redis reachability. "
+        "HEAD is accepted so monitors and load balancers that probe with a "
+        "bodyless request do not see a spurious 405."
+    ),
     responses={503: {"description": "At least one dependency is unavailable."}},
 )
 async def health_check(response: Response) -> HealthResponse:
