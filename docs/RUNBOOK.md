@@ -1264,7 +1264,8 @@ curl -sSI https://demo.<domain>/ | head -n 3
 
 - [ ] `/health` → `status: healthy`, `database: true`, `redis: true`.
 - [ ] `/api/v1/documents` без ключа → 401, с ключом → 200.
-- [ ] `.deployed_image_tag` совпадает с выкатанным тегом.
+- [ ] `.deployed_image_tag` совпадает с выкатанным тегом и **не** равен `latest`.
+- [ ] `.deployed_image_ref` содержит `@sha256:` (образ запинен по digest).
 - [ ] В логах `api`/`worker` нет повторяющихся исключений.
 - [ ] Новый бэкап появился в `backups/`.
 
@@ -1284,6 +1285,52 @@ curl -sSI https://demo.<domain>/ | head -n 3
 - [ ] Ротация GHCR PAT.
 - [ ] `df -h` и `docker system df` в норме.
 - [ ] Проверены алерты мониторинга (сработают ли на самом деле).
+
+# Приложение C.1. Ручные команды на сервере
+
+`docker-compose.prod.yml` подставляет образ как `${DOCMIND_IMAGE_REF:?...}`, то
+есть требует ссылку вида `repo@sha256:<digest>`. Rollout экспортирует её только
+внутри своего процесса, поэтому ручной `docker compose ...` в свежей сессии
+падает:
+
+```
+error while interpolating services.api.image: required variable DOCMIND_IMAGE_REF
+is missing a value: set DOCMIND_IMAGE_REF to repo@sha256:<digest>
+```
+
+Поэтому рядом с `.deployed_image_tag` rollout пишет второй файл состояния,
+пригодный для подключения как shell:
+
+| Файл | Содержимое |
+| --- | --- |
+| `.deployed_image_tag` | тег последнего успешного деплоя |
+| `.deployed_image_ref` | `DOCMIND_IMAGE_REF=repo@sha256:…`; в демо ещё `DOCMIND_DEMO_IMAGE_REF` |
+
+```bash
+cd /opt/docmind
+set -a; . ./.deployed_image_ref; set +a
+docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.prod.yml logs --tail=50 api worker
+```
+
+Если файла ещё нет (деплой выполнялся до его появления), ссылку можно взять из
+работающего контейнера — она уже записана там как digest:
+
+```bash
+export DOCMIND_IMAGE_REF="$(docker inspect --format '{{.Config.Image}}' docmind-prod-api-1)"
+```
+
+Демо-контур: `cd /opt/docmind-demo` и то же самое; в его файле будет ещё
+`DOCMIND_DEMO_IMAGE_REF`.
+
+> Не подключайте через `source` сам `.env`: это формат Compose, а не shell.
+> Значения с пробелами без кавычек (например `BACKUP_SYNC_CMD=rclone copy …`)
+> выполнятся как команды, а `$(...)` внутри значения — как подстановка.
+
+Если `.deployed_image_tag` всё же оказался `latest`, состояние не
+воспроизводимо: повторный `docker compose ... up` возьмёт текущий `latest`, а не
+выкатанный образ. Перезапустите деплой с `sha-<commit>` или с релизным тегом
+`vX.Y.Z` — rollout пишет предупреждение, когда тег мутабельный.
 
 # Приложение D. Диагностика
 

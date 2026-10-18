@@ -33,6 +33,9 @@ HEALTH_URL="${HEALTH_URL:-http://localhost:8000/health}"
 HEALTH_RETRIES="${HEALTH_RETRIES:-36}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-5}"
 STATE_FILE="${STATE_FILE:-.deployed_image_tag}"
+# Same state, shaped so the shell can source it: docker-compose.prod.yml requires
+# DOCMIND_IMAGE_REF, and the rollout only exports it in its own process.
+IMAGE_REF_FILE="${IMAGE_REF_FILE:-.deployed_image_ref}"
 BACKUP_DIR="${BACKUP_DIR:-backups}"
 KEEP_BACKUPS="${KEEP_BACKUPS:-5}"
 ENV_FILE="${ENV_FILE:-.env}"
@@ -51,6 +54,15 @@ cd "${ROOT_DIR}"
 export DOCMIND_IMAGE
 
 log() { printf '[deploy] %s\n' "$*"; }
+
+# A tag identifies a single build only while it cannot be repointed: that is the
+# release workflow's "sha-<commit>" form, or a semver release tag. Mutable tags
+# ("latest", "main", "1.2") make the recorded state ambiguous, and an automatic
+# rollback through them may resolve to a different build than the one deployed.
+is_immutable_tag() {
+    [[ "$1" =~ ^sha-[0-9a-f]{7,40}$ ]] \
+        || [[ "$1" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.]+)?$ ]]
+}
 
 # Read a variable from the environment or the server-side .env file, so the
 # rollout can decide whether the opt-in Ollama profile is required.
@@ -311,5 +323,23 @@ fi
 # ---------------------------------------------------------------------------
 # 6. Persist state for the next deployment / rollback
 # ---------------------------------------------------------------------------
-printf '%s' "${IMAGE_TAG}" > "${STATE_FILE}"
+if ! is_immutable_tag "${IMAGE_TAG}"; then
+    log "WARNING: '${IMAGE_TAG}' is a mutable tag; ${STATE_FILE} will not identify"
+    log "         the exact image, so an automatic rollback may resolve to a different"
+    log "         build. Deploy 'sha-<commit>' or a vX.Y.Z release tag instead."
+fi
+printf '%s\n' "${IMAGE_TAG}" > "${STATE_FILE}"
+
+# The digest-pinned references contain no whitespace, so this file is safe to
+# source as shell - unlike the Compose .env file. It exists so that manual
+# `docker compose` calls do not fail on "required variable DOCMIND_IMAGE_REF".
+{
+    printf '# deployed tag: %s\n' "${IMAGE_TAG}"
+    printf 'DOCMIND_IMAGE_REF=%s\n' "${DOCMIND_IMAGE_REF}"
+    if [[ -n "${DOCMIND_DEMO_IMAGE_REF:-}" ]]; then
+        printf 'DOCMIND_DEMO_IMAGE_REF=%s\n' "${DOCMIND_DEMO_IMAGE_REF}"
+    fi
+} > "${IMAGE_REF_FILE}"
+chmod 0644 "${IMAGE_REF_FILE}"
+
 log "deployment complete: ${DOCMIND_IMAGE_REF}"
