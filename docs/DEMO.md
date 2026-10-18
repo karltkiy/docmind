@@ -213,14 +213,45 @@ sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 
-Two things matter for the demo vhost:
+Three things matter for the demo vhost:
 
+- **Compression.** `encode zstd gzip` is enabled on the demo vhost. Without it
+  the whole Streamlit bundle is transferred raw (see the baseline below); the
+  production API vhost deliberately has no `encode`, because it fronts the SSE
+  chat endpoint.
 - **WebSockets.** Streamlit talks over `/_stcore/stream`; Caddy upgrades it
   transparently, but the timeouts must not kill an idle session
   (`read_timeout 0` in the sample).
 - **Framing.** The site embeds the page in an iframe, so no `X-Frame-Options`
   header is set. To restrict who may frame it, use `frame-ancestors` instead of
   removing protection altogether — it is commented in the sample.
+
+### Performance baseline (cold load)
+
+Recorded in a HAR capture with the browser cache disabled (`Disable cache` in
+DevTools). That is the worst case and the only one that exercises transfer size:
+repeat visits hit `Cache-Control: public, immutable, max-age=31536000` and skip
+the bundle entirely.
+
+| Metric | No compression |
+| --- | --- |
+| `onContentLoad` / `onLoad` | 15 184 / 15 246 ms |
+| Requests | 89 — 81 JS chunks, 2 fonts, 1 CSS |
+| Transferred | 2 569 KB, all over one HTTP/2 connection |
+| JS / fonts / CSS / HTML | 2 146 / 531 / 27 / 6 KB |
+| Responses with `Content-Encoding` | 0 of 89 |
+| TTFB of the static burst | ~4.1 s, after the HTML at 184 ms |
+| `/_stcore/stream` (101) | requested at 15.7 s, handshake took 11.1 s |
+
+The HTML is served in 184 ms and lazy chunks requested later get a TTFB of
+0–1 ms, so request handling is not the bottleneck: ~2.5 MB of uncompressed
+assets saturate a single connection (~169 KB/s aggregate), and that queue also
+delays the WebSocket handshake which is what makes the UI interactive.
+
+Target with compression enabled: ~0.8–0.9 MB transferred and `onLoad` under 5 s
+on the same link. Two checks after a proxy change: `Content-Encoding: zstd` (or
+`gzip`) must be present on `/static/js/*` and `/static/css/*`, and the fonts
+should stay uncompressed because woff2 is already compressed.
 
 ## 8. Embedding on the site
 
