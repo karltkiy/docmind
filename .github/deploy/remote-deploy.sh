@@ -55,11 +55,22 @@ log() { printf '[deploy] %s\n' "$*"; }
 # Read a variable from the environment or the server-side .env file, so the
 # rollout can decide whether the opt-in Ollama profile is required.
 read_env_var() {
-    local name="$1" fallback="${2:-}" value="${!name:-}"
+    # Every word of a `local` command is expanded before any of its assignments
+    # run, so ${!name} must not share a declaration with name="$1": the
+    # indirection would be evaluated while `name` is still unset, and `set -u`
+    # turns that into "name: invalid indirect expansion" (bash 5.2/5.3).
+    local name="$1"
+    local fallback="${2:-}"
+    local value=""
+    value="${!name-}"
     if [[ -z "${value}" && -f "${ENV_FILE}" ]]; then
+        # Strip the inline comment first, then the whitespace: trimming in the
+        # other order leaves "ollama   " behind for `KEY=ollama  # comment`,
+        # which never compares equal to "ollama" further down.
         value="$(grep -E "^[[:space:]]*${name}=" "${ENV_FILE}" | tail -n1 | cut -d= -f2- \
-            | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+            | sed -e 's/^[[:space:]]*//' \
                   -e 's/[[:space:]]#.*$//' \
+                  -e 's/[[:space:]]*$//' \
                   -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")"
     fi
     printf '%s' "${value:-${fallback}}"
