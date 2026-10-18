@@ -1433,6 +1433,7 @@ export DOCMIND_IMAGE_REF="$(docker inspect --format '{{.Config.Image}}' docmind-
 | Демо: «corpus is still empty» | seed не выполнялся | запустите `--profile seed run --rm demo-seed` и посмотрите вывод |
 | Seed: `... rate limited` | мало `UPLOAD_RATE_LIMIT_REQUESTS` | скрипт ждёт по `Retry-After`; поднимите лимит или подождите |
 | Пустой iframe | фрейминг, CSP или mixed content | уберите `X-Frame-Options`, настройте `frame-ancestors`, используйте HTTPS |
+| Демо: первый визит ~15 s, в HAR нет `Content-Encoding` | у демо-вхоста нет сжатия | включите `encode zstd gzip` (Caddy) или `gzip on` (nginx); цель — см. baseline в [`docs/DEMO.md`](DEMO.md:229) |
 | Caddy: 502 Bad Gateway | Caddy старше контейнеров | `docker compose ps`; дождитесь health, затем reload Caddy |
 | ACME не выпускает сертификат | DNS/порты/лимиты CA | см. таблицу в части 10.4 |
 | Диск заполнен | логи/образы/тома | `docker system df`, `journalctl --vacuum-size=200M`, prune образов |

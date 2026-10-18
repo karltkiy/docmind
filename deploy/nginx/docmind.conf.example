@@ -8,6 +8,11 @@
 # Critical for the chat endpoint: `proxy_buffering off` (and the timeouts below)
 # so `POST /api/v1/chat/completions` streams SSE tokens incrementally instead of
 # delivering them in one buffered burst.
+#
+# The demo vhost at the bottom of this file does enable gzip: its upstream is
+# Streamlit serving ~2.1 MB of JavaScript, and a cold load without compression
+# takes ~15 s on a slow link. The API vhost deliberately stays uncompressed so
+# SSE responses are never buffered.
 # ---------------------------------------------------------------------------
 
 upstream docmind_api {
@@ -59,4 +64,89 @@ server {
         proxy_read_timeout 600s;
         proxy_send_timeout 600s;
     }
+}
+
+# ---------------------------------------------------------------------------
+# Public demo (Streamlit UI on the isolated demo stack).
+#
+# docker-compose.demo.yml publishes the UI on 127.0.0.1:8501 only; the demo API
+# on 8001 stays on loopback as well. The browser never talks to the API: the
+# Streamlit process calls it server-side.
+# ---------------------------------------------------------------------------
+
+upstream docmind_demo {
+    server 127.0.0.1:8501;
+    keepalive 16;
+}
+
+server {
+    listen 80;
+    server_name demo.docmind.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name demo.docmind.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/demo.docmind.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/demo.docmind.example.com/privkey.pem;
+
+    # The demo exposes no uploads; keep the body limit small.
+    client_max_body_size 1m;
+
+    # Compression matters here: a cold load pulls ~2.1 MB of JavaScript plus
+    # 531 KB of fonts. Without gzip every response is transferred raw (~2.5 MB,
+    # ~15 s on a slow link, see docs/DEMO.md). gzip_proxied is required because
+    # responses come from the Streamlit upstream, not from disk. woff2 is
+    # deliberately absent from gzip_types: it is already compressed.
+    gzip on;
+    gzip_comp_level 5;
+    gzip_min_length 1024;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_types
+        application/javascript
+        application/json
+        application/manifest+json
+        image/svg+xml
+        text/css
+        text/javascript
+        text/plain;
+
+    location / {
+        proxy_pass http://docmind_demo;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        # Overwrite, do not append: a client-supplied X-Forwarded-For would
+        # otherwise let anyone forge the address the per-client rate limiter
+        # keys on (see src/api/deps.py).
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # One long-lived WebSocket per tab; nginx must neither time it out nor
+    # buffer it.
+    location /_stcore/stream {
+        proxy_pass http://docmind_demo;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # Embedding this page in an iframe on the marketing site is intentional, so
+    # do NOT add X-Frame-Options. To restrict who may frame it, use an explicit
+    # allow-list instead:
+    # add_header Content-Security-Policy "frame-ancestors 'self' https://mysite.example" always;
 }

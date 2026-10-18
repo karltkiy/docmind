@@ -110,6 +110,15 @@ demo.example.com {
 		format json
 	}
 
+	# Compression is the single biggest win for a cold load: the Streamlit bundle
+	# is ~2.1 MB of JavaScript, and without this directive all 89 responses of a
+	# first visit arrived raw (no Content-Encoding) on one HTTP/2 connection,
+	# which took ~15 s end to end and also delayed the WebSocket handshake below.
+	# zstd is preferred by current browsers, gzip covers the rest. woff2 is
+	# already compressed and is not in the default content-type matcher, so the
+	# 531 KB of fonts are passed through as-is.
+	encode zstd gzip
+
 	# Caddy upgrades the WebSocket transparently (Streamlit's /_stcore/stream)
 	# and must not time out a long-lived connection.
 	reverse_proxy 127.0.0.1:8501 {
