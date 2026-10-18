@@ -426,6 +426,45 @@ ssh-copy-id -i ~/.ssh/docmind_deploy.pub deploy@<VPS_IP>
 cat ~/.ssh/docmind_deploy      # приватный ключ → в GitHub Secret SSH_KEY
 ```
 
+### 6.1.1. Если у ключа есть парольная фраза
+
+Ключ без пароля (`-N ""`, как выше) — предпочтительный вариант: его защищает
+сам GitHub Secret, а `SSH_PASSPHRASE` не нужен вообще.
+
+Если ключ всё же создан с парольной фразой, фраза хранится **отдельным**
+секретом, а не внутри `SSH_KEY`:
+
+```bash
+gh secret set SSH_PASSPHRASE --env production
+gh secret set SSH_PASSPHRASE --env demo
+```
+
+`Deploy Production` и `Deploy Demo` передают его в `appleboy/scp-action` и
+`appleboy/ssh-action` через вход `passphrase`. Без этого секрета `drone-scp`
+устанавливает TCP-соединение и определяет ОС сервера, но аутентифицироваться не
+может:
+
+```
+ssh.ParsePrivateKey: ssh: this private key is passphrase protected
+ssh: handshake failed: ssh: unable to authenticate, attempted methods [none],
+no supported methods remain
+```
+
+`attempted methods [none]` — важная деталь: список методов аутентификации пуст,
+то есть ключ не загрузился вообще. Сервер здесь ни при чём, `authorized_keys`
+тоже: до сверки ключа дело не доходит.
+
+Проверить пару «ключ + фраза» до пуша:
+
+```bash
+ssh-keygen -y -P "$SSH_PASSPHRASE" -f ~/.ssh/docmind_deploy > /tmp/docmind.pub
+ssh-keygen -lf /tmp/docmind.pub        # отпечаток, который должен быть на сервере
+```
+
+На VPS: `ssh-keygen -lf ~/.ssh/authorized_keys` — отпечатки обязаны совпасть.
+То же самое печатает диагностический шаг `Validate SSH deploy key` в обоих
+workflow, так что сверять можно прямо по логу Actions.
+
 ## 6.2. Токен для GHCR
 
 Создайте **Personal Access Token**:
@@ -444,6 +483,7 @@ cat ~/.ssh/docmind_deploy      # приватный ключ → в GitHub Secre
 | Secret | `SSH_HOST` | `<VPS_IP>` |
 | Secret | `SSH_USER` | `deploy` |
 | Secret | `SSH_KEY` | приватный ключ целиком, с `-----BEGIN…/END…-----` |
+| Secret | `SSH_PASSPHRASE` | парольная фраза к `SSH_KEY`; **не нужен**, если ключ без пароля |
 | Secret | `SSH_PORT` | `22` (или ваш) |
 | Secret | `DEPLOY_PATH` | `/opt/docmind` |
 | Secret | `GHCR_USER`, `GHCR_PULL_TOKEN` | доступ к приватному образу |
@@ -455,6 +495,7 @@ cat ~/.ssh/docmind_deploy      # приватный ключ → в GitHub Secre
 | --- | --- | --- |
 | Environment | `demo` | **без** required reviewers |
 | Secret | `SSH_HOST`, `SSH_USER`, `SSH_KEY`, `SSH_PORT` | те же доступы |
+| Secret | `SSH_PASSPHRASE` | фраза от **демо**-ключа; секреты контуров не переиспользуются |
 | Secret | `DEPLOY_PATH` | `/opt/docmind-demo` |
 | Secret | `GHCR_USER`, `GHCR_PULL_TOKEN` | те же |
 | Variable | `DEMO_URL` | `https://demo.<domain>` |

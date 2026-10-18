@@ -6,14 +6,21 @@ description: >-
   *public* key and its fingerprint reach the log - the private key never does.
 
   The step never fails the job: it annotates the log with ::error:: / ::warning::
-  and exits 0, so the deploy steps stay the single gate for a rollout. This is a
-  diagnostic probe for the "ssh: this private key is passphrase protected" ->
-  "attempted methods [none]" handshake failure.
+  and exits 0, so the deploy steps stay the single gate for a rollout. It exists
+  because drone-scp reports "ssh: this private key is passphrase protected" ->
+  "attempted methods [none]" with no hint about which of the two causes applies:
+  a missing SSH_PASSPHRASE or damaged key material.
 
 inputs:
   key:
     description: "Private key material, i.e. the SSH_KEY secret."
     required: true
+  passphrase:
+    description: >-
+      Passphrase for the private key, i.e. the SSH_PASSPHRASE secret. Leave
+      empty when the key is unencrypted.
+    required: false
+    default: ""
   label:
     description: "Contour name used in log annotations (production, demo)."
     required: false
@@ -26,6 +33,7 @@ runs:
       shell: bash
       env:
         SSH_KEY_MATERIAL: ${{ inputs.key }}
+        SSH_KEY_PASSPHRASE: ${{ inputs.passphrase }}
         KEY_LABEL: ${{ inputs.label }}
       run: |
         # GitHub wraps `run` in `bash --noprofile --norc -e -o pipefail`, and a
@@ -111,35 +119,51 @@ runs:
         # --- 4. Parse test --------------------------------------------------
         # This is the check that reproduces the drone-scp failure
         # "ssh.ParsePrivateKey: ssh: this private key is passphrase protected".
-        parse_err="$(ssh-keygen -y -P '' -f "${key_file}" 2>&1 >/dev/null)"
+        # SSH_PASSPHRASE is used when present, so an encrypted key is a valid
+        # configuration instead of an error: appleboy actions accept the same
+        # passphrase through their `passphrase` input.
+        parse_err_file="${key_file}.err"
+        pub="$(ssh-keygen -y -P "${SSH_KEY_PASSPHRASE:-}" -f "${key_file}" 2>"${parse_err_file}")"
         parse_rc=$?
-        case "${parse_err}" in
-          '')
-            if [ "${parse_rc}" -eq 0 ]; then
-              echo "- ssh-keygen loads the key without a passphrase: OK"
-            else
-              echo "::warning::${KEY_LABEL}: ssh-keygen exited ${parse_rc} without a message"
-            fi
-            ;;
-          *'incorrect passphrase'*|*'passphrase protected'*)
-            echo "::error::${KEY_LABEL}: key is passphrase-protected (ssh-keygen exit ${parse_rc}) - appleboy actions cannot use it without a passphrase input; replace it with an unencrypted deploy key"
-            ;;
-          *'invalid format'*|*'error in libcrypto'*|*'bad base64'*)
-            echo "::error::${KEY_LABEL}: key material is corrupt (ssh-keygen exit ${parse_rc}) - ${parse_err}"
-            ;;
-          *)
-            echo "::warning::${KEY_LABEL}: ssh-keygen could not load the key (exit ${parse_rc}) - ${parse_err}"
-            ;;
-        esac
+        parse_err="$(cat "${parse_err_file}" 2>/dev/null)"
+        rm -f "${parse_err_file}"
+        if [ "${parse_rc}" -eq 0 ]; then
+          if [ -n "${SSH_KEY_PASSPHRASE:-}" ]; then
+            echo "- ssh-keygen accepts the key with SSH_PASSPHRASE: OK"
+          else
+            echo "- ssh-keygen loads the key without a passphrase: OK"
+          fi
+        else
+          case "${parse_err}" in
+            *'incorrect passphrase'*|*'passphrase protected'*|*'decrypt'*)
+              if [ -n "${SSH_KEY_PASSPHRASE:-}" ]; then
+                echo "::error::${KEY_LABEL}: SSH_PASSPHRASE does not decrypt SSH_KEY (ssh-keygen exit ${parse_rc}) - the secret holds a different passphrase than the key was created with"
+              else
+                echo "::error::${KEY_LABEL}: key is passphrase-protected (ssh-keygen exit ${parse_rc}) and SSH_PASSPHRASE is empty - set that secret on this environment, or use an unencrypted deploy key"
+              fi
+              ;;
+            *'invalid format'*|*'error in libcrypto'*|*'bad base64'*)
+              echo "::error::${KEY_LABEL}: key material is corrupt (ssh-keygen exit ${parse_rc}) - ${parse_err}"
+              ;;
+            *)
+              echo "::warning::${KEY_LABEL}: ssh-keygen could not load the key (exit ${parse_rc}) - ${parse_err}"
+              ;;
+          esac
+        fi
 
         # --- 5. Public half, to diff against the server ---------------------
-        if pub="$(ssh-keygen -y -P '' -f "${key_file}" 2>/dev/null)" && [ -n "${pub}" ]; then
+        if [ "${parse_rc}" -eq 0 ] && [ -n "${pub}" ]; then
           echo ""
           echo "Derived public key (public data - compare it with \`~/.ssh/authorized_keys\` on the VPS for ${KEY_LABEL}):"
           echo '```'
           echo "${pub}"
           echo '```'
-          ssh-keygen -lf "${key_file}" | sed 's/^/fingerprint: /' || true
+          # The fingerprint comes from the derived public key: `-lf` on the
+          # private key cannot prompt for a passphrase non-interactively.
+          pub_file="${key_file}.pub.tmp"
+          printf '%s\n' "${pub}" > "${pub_file}"
+          ssh-keygen -lf "${pub_file}" | sed 's/^/fingerprint: /' || true
+          rm -f "${pub_file}"
         else
           echo ""
           echo "No public key could be derived, so this key cannot be matched against \`authorized_keys\` yet."

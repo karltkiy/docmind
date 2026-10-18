@@ -81,6 +81,7 @@ jobs:
         uses: ./.github/actions/validate-ssh-key
         with:
           key: ${{ secrets.SSH_KEY }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
           label: production
 
       - name: Copy deployment assets to the server
@@ -90,6 +91,9 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
+          # drone-scp cannot use a passphrase-protected key without this input;
+          # an empty secret is fine for an unencrypted deploy key.
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
           port: ${{ secrets.SSH_PORT || 22 }}
           source: "docker-compose.prod.yml,.github/deploy/remote-deploy.sh"
           target: ${{ secrets.DEPLOY_PATH }}
@@ -110,6 +114,7 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
           port: ${{ secrets.SSH_PORT || 22 }}
           envs: GHCR_USER,GHCR_TOKEN,DOCMIND_IMAGE,IMAGE_TAG,DEPLOY_PATH
           command_timeout: 30m
