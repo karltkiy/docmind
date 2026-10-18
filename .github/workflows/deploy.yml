@@ -65,13 +65,23 @@ jobs:
         run: |
           echo "::error::SSH_HOST is not configured for the 'production' environment. Set the deployment secrets before running this workflow."
           exit 1
-      
+
       - name: Resolve lowercase image reference
         id: registry
         run: |
           # GHCR paths must be lowercase; `github.repository` preserves the
           # owner/repo casing and would break `docker pull` otherwise.
           echo "image=$(printf '%s' 'ghcr.io/${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      # Diagnostic probe: reports whether SSH_KEY is a parsable, unencrypted
+      # OpenSSH key and prints its public half. Never fails the job, so the
+      # actual deploy steps below stay the only gate.
+      - name: Validate SSH deploy key
+        if: always()
+        uses: ./.github/actions/validate-ssh-key
+        with:
+          key: ${{ secrets.SSH_KEY }}
+          label: production
 
       - name: Copy deployment assets to the server
         if: ${{ env.HAS_SSH_HOST == 'true' }}
