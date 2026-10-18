@@ -678,8 +678,22 @@ sudo apt update && sudo apt install -y caddy
 
 ```bash
 sudo mkdir -p /var/log/caddy
-sudo chown caddy:caddy /var/log/caddy
+sudo chown -R caddy:caddy /var/log/caddy
 ```
+
+> **Ловушка.** `sudo caddy validate` (как и любой `caddy run`/`caddy reload` от
+> root) **создаёт** файлы из директивы `log` от `root` с правами `0600`. После
+> этого `systemctl reload caddy` падает с
+> `open /var/log/caddy/docmind-api.log: permission denied` и `status_code:400`
+> от admin API, хотя `validate` рапортует `Valid configuration`. Лечится один
+> раз и навсегда:
+>
+> ```bash
+> sudo chown caddy:caddy /var/log/caddy/*.log
+> ```
+>
+> Повторный `validate` от `sudo` уже безопасен: root, открывая существующий
+> файл, владельца не меняет.
 
 Возьмите [`deploy/caddy/Caddyfile.example`](../deploy/caddy/Caddyfile.example)
 как основу:
@@ -695,12 +709,18 @@ sudo nano /etc/caddy/Caddyfile
 | Блок | Зачем |
 | --- | --- |
 | `request_body { max_size 30MB }` | чуть выше `MAX_UPLOAD_MB=25`, иначе multipart-обёртка срежет валидный файл |
-| `handle /health` | публичный проб без ключа |
+| `handle /health` | публичный проб без ключа; принимает `GET` и `HEAD` |
 | `handle /metrics` + `remote_ip` | `/metrics` отдаётся **без авторизации** — наружу нельзя |
 | `handle /api/v1/chat/completions` + `flush_interval -1` | без этого SSE придёт одним блоком в конце |
-| `header_up X-Forwarded-For {remote_host}` | **перезапись**, а не append: иначе клиент подделает свой IP и обойдёт rate limit |
+| `header_up X-Forwarded-For {remote_host}` | явная **перезапись**, а не append. На Caddy ≥ 2.7 избыточно (входящий заголовок от недоверенного пира игнорируется), но безвредно и остаётся страховкой, если позже расширить `trusted_proxies` |
+| `log { output file ... { roll_size / roll_keep } }` | имя попадает в Certificate Transparency, сканеры идут сразу: без ротации лог растёт безгранично |
 | demo vhost: `read_timeout 0` | WebSocket Streamlit не должен умирать по таймауту |
 | demo vhost: нет `X-Frame-Options` | страница встраивается в iframe на сайте |
+
+> WARN `Unnecessary header_up X-Forwarded-For/Proto` в выводе `caddy validate` —
+> **ожидаемый шум** на Caddy ≥ 2.7, а `Caddyfile input is not formatted` лечится
+> `sudo caddy fmt --overwrite /etc/caddy/Caddyfile`. Ни один из них не мешает
+> загрузке конфига.
 
 ## 10.3. Запуск и проверка
 
@@ -714,12 +734,17 @@ sudo journalctl -u caddy -n 50 --no-pager
 Проверки:
 
 ```bash
-curl -sSI https://api.<domain>/health | head -n 3
+curl -sS -o /dev/null -w '%{http_code}\n' https://api.<domain>/health      # ждём 200
 curl -sS  https://api.<domain>/health | jq .
+curl -sSI https://api.<domain>/health | head -n 3                          # HEAD тоже разрешён
 curl -sS -o /dev/null -w '%{http_code}\n' https://api.<domain>/metrics    # ждём 404
 curl -sS -o /dev/null -w '%{http_code}\n' \
   -H "X-API-Key: $API_KEY" https://api.<domain>/api/v1/documents          # ждём 200
 ```
+
+> `/health` принимает и `GET`, и `HEAD` ([`src/main.py`](../src/main.py)). Если
+> мониторинг пробует `HEAD` и получает `405`, значит развёрнута старая сборка:
+> такой probe выглядит как «сервис лежит» при полностью живом API.
 
 Проверка, что реальный IP клиента доходит до приложения: попросите кого-то
 снаружи вызвать API и убедитесь, что в JSON-логе Caddy `client_ip` — его адрес,
@@ -733,6 +758,16 @@ curl -sS -o /dev/null -w '%{http_code}\n' \
 | `connection refused` | 80/443 закрыты в `ufw` или у провайдера |
 | `rate limited` | слишком много попыток за 7 дней: подождите или используйте staging CA |
 | Валидный ответ, но предупреждение о сертификате | сертификат ещё получается; проверьте `journalctl -u caddy` |
+
+## 10.5. Если vhost отдаёт 502
+
+`dial tcp 127.0.0.1:8501: connect: connection refused` в
+`/var/log/caddy/*.log` означает, что **не запущен апстрим**, а не ошибку Caddy:
+сверьте `ss -lntp | grep -E ':(8000|8501)\b'`. Если демо-контур на этом VPS не
+нужен, удалите demo-vhost — иначе каждый интернет-сканер (`/.env`,
+`/.git/config`, `/wp-json/`, `/graphql`) продолжит наполнять лог. Ротация
+`roll_size`/`roll_keep` в [`deploy/caddy/Caddyfile.example`](../deploy/caddy/Caddyfile.example)
+ограничивает его размер, но не убирает шум.
 
 ---
 

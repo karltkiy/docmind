@@ -34,6 +34,14 @@ async def test_health_endpoint_reports_dependencies() -> None:
     assert isinstance(body["provider_ready"], bool)
 
 
+async def test_health_endpoint_accepts_head() -> None:
+    """Probe with HEAD must not 405: monitors and load balancers use it."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.head("/health")
+    assert response.status_code in (200, 503)
+
+
 def test_openapi_paths_are_registered() -> None:
     paths = app.openapi()["paths"]
     assert "/api/v1/documents/upload" in paths
