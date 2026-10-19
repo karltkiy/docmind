@@ -150,7 +150,11 @@ def _chat(document_id: str, prompt: str) -> None:
         st.session_state.messages.append({"role": "assistant", "content": full_response})
 
 
-st.set_page_config(page_title="DocMind AI - Demo", page_icon="🧠", layout="wide")
+st.set_page_config(
+    page_title="DocMind AI — Document Intelligence",
+    page_icon="🧠",
+    layout="wide",
+)
 
 st.title("🧠 DocMind AI")
 st.markdown("Enterprise RAG System for Document Intelligence")
