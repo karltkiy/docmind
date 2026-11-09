@@ -159,9 +159,20 @@ def content_tokens(text: str) -> list[str]:
     ]
 
 
+def _lf_normalised(data: bytes) -> bytes:
+    """Return ``data`` with every CRLF/CR line ending collapsed to LF.
+
+    Git stores text files with LF (``* text=auto eol=lf`` in ``.gitattributes``),
+    but a Windows working tree can still hold CRLF bytes for files written after
+    the checkout. Hashing normalised content keeps the recorded corpus checksums
+    stable on every platform and regardless of the checkout order.
+    """
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
 def file_sha256(path: Path) -> str:
-    """Return the SHA-256 hex digest of a file's raw bytes."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    """Return the SHA-256 hex digest of a file's LF-normalised content."""
+    return hashlib.sha256(_lf_normalised(path.read_bytes())).hexdigest()
 
 
 def cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
@@ -369,9 +380,7 @@ def _latency_stats(values: Sequence[float]) -> dict[str, float | None]:
     }
 
 
-def retrieved_filenames(
-    results: Iterable[Any], filename_by_id: Mapping[str, str]
-) -> list[str]:
+def retrieved_filenames(results: Iterable[Any], filename_by_id: Mapping[str, str]) -> list[str]:
     """Map ordered ``SearchResult``-like objects to document filenames."""
     names: list[str] = []
     for result in results:
@@ -732,9 +741,7 @@ def aggregate(case_results: Sequence[CaseResult], *, with_answers: bool) -> dict
                 ]
             )
         ),
-        "fact_coverage": _rounded(
-            _mean_optional([result.fact_coverage for result in scored])
-        ),
+        "fact_coverage": _rounded(_mean_optional([result.fact_coverage for result in scored])),
         "latency_ms": _latency_stats([result.latency_ms for result in case_results]),
         "server_response_time_ms": _latency_stats(
             [
@@ -915,9 +922,7 @@ def _ensure_corpus_indexed(dataset: GoldenDataset, index: DocumentIndex) -> None
     missing = [entry.filename for entry in dataset.corpus if entry.filename not in index.completed]
     if not missing:
         return
-    failed_hint = (
-        f" Failed documents: {', '.join(sorted(index.failed))}." if index.failed else ""
-    )
+    failed_hint = f" Failed documents: {', '.join(sorted(index.failed))}." if index.failed else ""
     raise EvalError(
         "the retrieval corpus is not fully indexed in PostgreSQL: "
         f"{', '.join(missing)}.{failed_hint} Upload the corpus first, for example "
@@ -995,9 +1000,7 @@ async def _upload_with_retry(client: Any, path: Path) -> dict[str, Any]:
     )
 
 
-async def _wait_for_indexing(
-    client: Any, pending: Mapping[str, str], timeout: float
-) -> None:
+async def _wait_for_indexing(client: Any, pending: Mapping[str, str], timeout: float) -> None:
     """Poll document status until every pending document is indexed."""
     remaining = dict(pending)
     deadline = time.monotonic() + timeout
@@ -1010,9 +1013,7 @@ async def _wait_for_indexing(
             info = response.json()
             status = info.get("status")
             if status == "completed":
-                logger.info(
-                    "%s: indexed (%s chunks).", filename, info.get("chunk_count", 0)
-                )
+                logger.info("%s: indexed (%s chunks).", filename, info.get("chunk_count", 0))
                 remaining.pop(filename)
             elif status == "failed":
                 raise EvalError(f"{filename}: indexing failed: {info.get('error')}")
@@ -1147,9 +1148,7 @@ async def _run_retrieval(
     return results
 
 
-async def _seed_via_http(
-    args: argparse.Namespace, settings: Any, dataset: GoldenDataset
-) -> None:
+async def _seed_via_http(args: argparse.Namespace, settings: Any, dataset: GoldenDataset) -> None:
     """Seed the corpus over HTTP before a retrieval run."""
     try:
         import httpx
@@ -1351,9 +1350,7 @@ def _write_report(path: Path, report: Mapping[str, Any]) -> None:
     """Write the JSON report, creating parent directories as needed."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-        )
+        path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     except OSError as exc:
         raise EvalError(f"cannot write the report to {path}: {exc}") from exc
     logger.info("Report written to %s", path)
@@ -1488,9 +1485,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     threshold = args.fail_under_hit_rate
     if threshold is not None and float(summary["hit_at_k"]) < threshold:
-        logger.error(
-            "hit@k %.4f is below the required %.4f.", summary["hit_at_k"], threshold
-        )
+        logger.error("hit@k %.4f is below the required %.4f.", summary["hit_at_k"], threshold)
         return 1
     logger.info(
         "Evaluation finished successfully in %.1f ms.",

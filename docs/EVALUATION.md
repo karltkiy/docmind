@@ -30,22 +30,25 @@ Each entry in `corpus[]` pins one file:
 | Field | Meaning |
 | --- | --- |
 | `filename` | File name inside `eval/corpus/` |
-| `sha256` | Lower-case hex SHA-256 of the file's raw bytes |
+| `sha256` | Lower-case hex SHA-256 of the file content normalised to LF line endings |
 
 The digest exists so a silently edited source document cannot invalidate a
 baseline without anyone noticing. `verify_corpus_files()` recomputes every
-digest and aborts the run with `sha256 mismatch` when the bytes drift.
+digest and aborts the run with `sha256 mismatch` when the content drifts.
 
-To recalculate digests after an intentional corpus edit:
+Digests are computed over the **LF-normalised** content, not the raw bytes on
+disk. Git stores these files with LF (`* text=auto eol=lf` in
+[`.gitattributes`](../.gitattributes)), while a Windows working tree can still
+hold CRLF bytes for files written after the checkout. Hashing normalised
+content keeps the recorded digests valid on every platform and after any number
+of re-checkouts.
 
-```powershell
-# Windows PowerShell
-Get-FileHash -Algorithm SHA256 eval/corpus/*.md
-```
+To recalculate digests after an intentional corpus edit, use the same helper
+the harness uses — do **not** use `Get-FileHash` or `sha256sum`, they hash raw
+bytes and produce platform-specific values:
 
 ```bash
-# Linux / macOS
-sha256sum eval/corpus/*.md
+python -c "import pathlib; from src.eval import file_sha256; [print(p.name, file_sha256(p)) for p in sorted(pathlib.Path('eval/corpus').glob('*.md'))]"
 ```
 
 Copy the resulting digests into `corpus[].sha256`. Regenerate baselines at the

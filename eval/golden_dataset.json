@@ -3,27 +3,27 @@
   "corpus": [
     {
       "filename": "data-retention.md",
-      "sha256": "6d81b0f079d89180313308f4618524b3492a03b56a67ebcf536de9142a73c16d"
+      "sha256": "6224626e48448dc9873eb4bf666430b5d363554d1a7ac892198c5e02fd430889"
     },
     {
       "filename": "onboarding-guide.md",
-      "sha256": "e38165f66e6052f4dc74ed05970b1e16f88e41274c7dd17caacdac1dffe3e628"
+      "sha256": "51df134efe32753efd2b1e77d5f057ac42c2829cfd73fd9a23ba7b28c82458cd"
     },
     {
       "filename": "pricing-plans.md",
-      "sha256": "7aae100c85624f30699ac5aa35dcd058317ff318a817123075205f94768e2268"
+      "sha256": "510d5e6e69a2e5380538bc80814c3abc8b8d1f56ed75dd41b13651ca32631e33"
     },
     {
       "filename": "refund-policy.md",
-      "sha256": "75b1ad8aa35596cadc311d1c039b7217056bf845733388fe8b6b6461c752faab"
+      "sha256": "f0874448e01402092a1413be7bff4682fb23e6d756663de5d94ef45e9ed52b18"
     },
     {
       "filename": "security-overview.md",
-      "sha256": "89220863e24ac50c4ae3a81086cb5eaf46b3a7d65ebf5006fca7fb8f40ab46ff"
+      "sha256": "180e6b12f6437c9716ad9f6e5187299834e7368d50d519f87d9a980981cf15f2"
     },
     {
       "filename": "support-sla.md",
-      "sha256": "8b185db96434f9617f0f62b9e59ea174b8f5cc3cb7c419eb59a292e16546c730"
+      "sha256": "d3a0f14b4eeecf4b1325c098f08fbbad51af70f607c9ac1bbb44180f09d98b90"
     }
   ],
   "cases": [

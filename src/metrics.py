@@ -240,9 +240,7 @@ def _labeled_counter(metric_name: str, label_name: str, label_value: str) -> int
     return 0
 
 
-def _bucket_percentile(
-    buckets: list[tuple[float, float]], count: float, quantile: float
-) -> float:
+def _bucket_percentile(buckets: list[tuple[float, float]], count: float, quantile: float) -> float:
     """Approximate a quantile from cumulative histogram buckets.
 
     The target rank is located in the bucket whose cumulative count first
