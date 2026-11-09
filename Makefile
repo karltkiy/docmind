@@ -12,7 +12,7 @@ COV_FAIL_UNDER ?= 60
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install lint format format-check typecheck test cov check up down logs build migrate revision clean eval eval-seed eval-e2e
+.PHONY: help install lint format format-check typecheck test cov check up down logs build migrate revision clean eval eval-seed eval-e2e demo-fixtures
 
 help: ## Show this help.
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -53,6 +53,10 @@ eval-seed: ## Upload the eval corpus through the API and wait for indexing.
 
 eval-e2e: ## End-to-end run against a live API (SSE answers).
 	$(PY) -m src.eval --mode e2e --base-url http://127.0.0.1:8000
+
+demo-fixtures: ## Rebuild demo/fixtures/*.json from the run artifacts, then verify.
+	$(PY) -m demo.export_fixtures
+	$(PY) -m demo.export_fixtures --check
 
 up: ## Start the full local stack.
 	$(COMPOSE) up --build -d

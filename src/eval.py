@@ -639,7 +639,17 @@ class CaseResult:
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialise the case result for the JSON report."""
+        """Serialise the case result for the JSON report.
+
+        Retrieved entries may carry private keys (prefixed with ``_``) that
+        feed the full chunk text to the scorer. Those keys are stripped here
+        so the on-disk report only contains the human-readable ``excerpt`` and
+        never embeds the complete chunk bodies.
+        """
+        retrieved = [
+            {key: value for key, value in item.items() if not key.startswith("_")}
+            for item in self.retrieved
+        ]
         return {
             "id": self.case.id,
             "question": self.case.question,
@@ -653,7 +663,7 @@ class CaseResult:
                 for evidence in self.case.expected_evidence
             ],
             "expected_answer": self.case.expected_answer,
-            "retrieved": self.retrieved,
+            "retrieved": retrieved,
             "hit": self.hit,
             "reciprocal_rank": self.reciprocal_rank,
             "context_recall": self.context_recall,
@@ -680,9 +690,14 @@ def _score_case(
     response_time_ms: float | None = None,
     semantic: float | None = None,
 ) -> CaseResult:
-    """Score one case from its retrieved chunks and (optionally) its answer."""
+    """Score one case from its retrieved chunks and (optionally) its answer.
+
+    The full chunk text is read from the private ``_content`` key when the
+    caller supplies it (retrieval mode does); otherwise scoring falls back to
+    ``excerpt`` so older or externally produced reports keep their behaviour.
+    """
     names = [str(item["filename"]) for item in retrieved if item.get("filename")]
-    contexts = [str(item.get("excerpt", "")) for item in retrieved]
+    contexts = [str(item.get("_content") or item.get("excerpt", "")) for item in retrieved]
     needles = [evidence.must_contain for evidence in case.expected_evidence]
     result = CaseResult(
         case=case,
@@ -1083,6 +1098,8 @@ async def _evaluate_retrieval_case(
                 "chunk_index": int(hit.chunk.chunk_index),
                 "score": round(float(hit.score), 4),
                 "excerpt": str(hit.chunk.content)[:300],
+                # Private: full text for scoring; stripped by CaseResult.to_dict().
+                "_content": str(hit.chunk.content),
             }
             for hit in hits
         ]
@@ -1208,7 +1225,12 @@ async def _semantic_faithfulness_for(
 async def _evaluate_e2e_case(
     client: Any, case: GoldenCase, top_k: int, embedder: Any | None
 ) -> CaseResult:
-    """Ask the chat endpoint for an answer and score the SSE sources and tokens."""
+    """Ask the chat endpoint for an answer and score the SSE sources and tokens.
+
+    The ``sources`` SSE frame only carries the 300-character ``excerpt`` (see
+    :class:`src.schemas.chat.ChatSource`), so unlike retrieval mode this path
+    has no full chunk text to score against and deliberately uses the excerpt.
+    """
     payload: dict[str, Any] = {"query": case.question, "top_k": top_k}
     if case.document_ids:
         payload["document_ids"] = list(case.document_ids)

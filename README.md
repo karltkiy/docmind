@@ -205,7 +205,7 @@ data: {"type":"done"}
 
 ## Configuration Matrix
 
-All settings are validated in [`src/config.py`](src/config.py:40) and can be
+All settings are validated in [`src/config.py`](src/config.py) and can be
 supplied via environment variables or a `.env` file. Variables marked **Prod**
 are mandatory for the production stack ([`docker-compose.prod.yml`](docker-compose.prod.yml)).
 
@@ -319,11 +319,11 @@ repeatable golden-dataset harness turns those numbers into a regression signal.
 
 | Signal | Where it is produced | How to read it |
 | --- | --- | --- |
-| `X-Response-Time-Ms` | [`src/metrics.py`](src/metrics.py:143) (`MetricsMiddleware`, pure ASGI) | Returned on **every** response, even when `METRICS_ENABLED=False`; it is TTFB — time to `http.response.start`, not the full SSE stream |
+| `X-Response-Time-Ms` | [`src/metrics.py`](src/metrics.py) (`MetricsMiddleware`, pure ASGI) | Returned on **every** response, even when `METRICS_ENABLED=False`; it is TTFB — time to `http.response.start`, not the full SSE stream |
 | `docmind_retrieval_duration_seconds` | [`src/api/v1/chat.py`](src/api/v1/chat.py) | Histogram, label `outcome` (`success`/`error`); also `latency_ms.retrieval` in the JSON snapshot |
 | `docmind_chat_time_to_first_token_seconds` | [`src/api/v1/chat.py`](src/api/v1/chat.py) | Histogram, label `outcome`; `latency_ms.chat_time_to_first_token` |
 | `docmind_ingestion_duration_seconds` | [`src/worker/tasks.py`](src/worker/tasks.py) | Histogram, label `status` (`completed`/`failed`); `latency_ms.ingestion` |
-| `docmind_started_at_seconds` | [`src/metrics.py`](src/metrics.py:114) | Gauge with the process start time (unix seconds) |
+| `docmind_started_at_seconds` | [`src/metrics.py`](src/metrics.py) | Gauge with the process start time (unix seconds) |
 | `GET /metrics` | [`src/main.py`](src/main.py) | Prometheus exposition, **open** (no API key) |
 | `GET /api/v1/metrics` | [`src/api/v1/metrics.py`](src/api/v1/metrics.py) | JSON summary, **requires** `X-API-Key` like the rest of `/api/v1/*` |
 
@@ -349,21 +349,32 @@ error.
 
 ### Benchmark results
 
-> Numbers below are **placeholders** (`__`) and have not been measured on a real
-> deployment; they exist only to fix the reporting format.
+No number is hard-coded in this README. Measured results are exported from the
+run artifacts into `demo/fixtures/` and published by the demo's
+**Metrics & evidence** view (see [`demo/fixtures/README.md`](demo/fixtures/README.md)):
 
-| Metric | Baseline (retrieval) | Notes |
+| Fixture | Built from | Shows |
 | --- | --- | --- |
-| Average retrieval latency | `__ ms` | Placeholder — `summary.latency_ms.mean` from the retrieval run |
-| P95 retrieval latency | `__ ms` | Placeholder — `summary.latency_ms.p95` (bucket-interpolated) |
-| Hit rate @ k=4 | `__ %` | Placeholder — `summary.hit_at_k` over answerable cases |
-| Context recall | `__ %` | Placeholder — expected `must_contain` evidence found in retrieved excerpts |
-| Lexical faithfulness (e2e) | `__ %` | Placeholder — `summary.lexical_faithfulness`, `--mode e2e` |
-| Token F1 vs reference (e2e) | `__ %` | Placeholder — `summary.token_f1` against `expected_answer` |
+| [`demo/fixtures/retrieval_eval.json`](demo/fixtures/retrieval_eval.json) | newest `eval/reports/retrieval-fixed-*.json` | hit@k, MRR, context recall, false positives, retrieval latency |
+| [`demo/fixtures/microbenchmarks.json`](demo/fixtures/microbenchmarks.json) | `benchmarks/results/latest.json` | middleware, snapshot, scoring and chunker timings |
+| [`demo/fixtures/metrics_static.json`](demo/fixtures/metrics_static.json) | `benchmarks/static_metrics.json` | LOC, endpoints, dependencies, tests, coverage |
 
-These values come from `python -m src.eval --mode retrieval` and
-`python -m src.eval --mode e2e` on the 25-case golden dataset and are to be
-replaced with the results of a run on the target environment.
+Every fixture carries its git commit, generation timestamp, source command,
+environment and an explicit `limitations` list, and the page flags a fixture
+once it is older than 120 days. Rendering the page issues exactly one HTTP GET
+— `GET /api/v1/metrics`, an in-process Prometheus snapshot — so it never calls
+the chat endpoint and costs $0 in provider tokens.
+
+The public demo's **chat** is zero-token too: `DOCMIND_CHAT_MODE=replay` (the
+default when `DOCMIND_DEMO_MODE=1`) plays back a transcript recorded once by
+[`demo/record_transcript.py`](demo/record_transcript.py) and never calls the
+provider. Recordings are not shipped with the repository — a missing one is
+reported as such, with the command to create it, and there is no silent
+fallback to a live model call. See [`docs/DEMO.md`](docs/DEMO.md).
+
+```bash
+make demo-fixtures   # rebuild demo/fixtures/*.json from the artifacts, then --check
+```
 
 ### Interpretation & limits
 
@@ -441,7 +452,10 @@ mismatch, instead of failing later with an opaque pgvector error.
 ([`docker-compose.demo.yml`](docker-compose.demo.yml), Compose project
 `docmind-demo`) serves a read-only Streamlit UI on its own subdomain — own
 database, own `API_KEY`, own rate and spend limits, uploads disabled and a
-pre-seeded corpus. See [`docs/DEMO.md`](docs/DEMO.md).
+pre-seeded corpus. The UI has two views: **Chat & documents** (the live RAG
+demo, which spends tokens) and **Metrics & evidence**, which renders committed
+measurement fixtures plus a read-only `/api/v1/metrics` snapshot and therefore
+never calls the LLM. See [`docs/DEMO.md`](docs/DEMO.md).
 
 ### Required GitHub configuration
 
