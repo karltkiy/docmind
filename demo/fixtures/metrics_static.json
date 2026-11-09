@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "kind": "metrics_static",
+  "generated_at": "2026-11-09T16:42:22+00:00",
+  "provenance": {
+    "git_commit": "0f52e5483fd55139a2e218a9b5b9189b7f6803b4",
+    "git_dirty": false,
+    "source_command": "python -m benchmarks.static_metrics --with-coverage",
+    "source_artifacts": [
+      "benchmarks/static_metrics.json"
+    ],
+    "environment": {
+      "python": "3.14.8",
+      "platform": "Windows-11-10.0.26300-SP0",
+      "processor": "AMD64 Family 25 Model 68 Stepping 1, AuthenticAMD",
+      "cpu_count": 12
+    },
+    "exported_at": "2026-11-09T16:45:26+00:00"
+  },
+  "limitations": [
+    "25-case self-built retrieval set, not an industry benchmark",
+    "no similarity cut-off, negative cases still receive top-k context",
+    "latency measured on a single machine, not an SLA",
+    "hit@k depends on chunk_size/top_k/embedding model",
+    "static metrics are a snapshot of one working tree, not a code-quality score",
+    "line counts include Python docstrings as code lines"
+  ],
+  "payload": {
+    "loc": {
+      "methodology": "line based: total_lines = every text line; non_empty_lines = lines whose strip() is truthy; non_comment_lines = non-empty lines that do not start with '#' (Python docstrings count as code lines)",
+      "areas": [
+        {
+          "area": "alembic_versions",
+          "files": 1,
+          "total_lines": 105,
+          "non_empty_lines": 91,
+          "non_comment_lines": 85
+        },
+        {
+          "area": "benchmarks",
+          "files": 4,
+          "total_lines": 1175,
+          "non_empty_lines": 1046,
+          "non_comment_lines": 1039
+        },
+        {
+          "area": "demo",
+          "files": 8,
+          "total_lines": 3671,
+          "non_empty_lines": 3132,
+          "non_comment_lines": 2984
+        },
+        {
+          "area": "eval_json",
+          "files": 1,
+          "total_lines": 428,
+          "non_empty_lines": 428,
+          "non_comment_lines": 428
+        },
+        {
+          "area": "eval_markdown",
+          "files": 7,
+          "total_lines": 258,
+          "non_empty_lines": 186,
+          "non_comment_lines": 146
+        },
+        {
+          "area": "eval_python",
+          "files": 0,
+          "total_lines": 0,
+          "non_empty_lines": 0,
+          "non_comment_lines": 0
+        },
+        {
+          "area": "src",
+          "files": 30,
+          "total_lines": 4147,
+          "non_empty_lines": 3498,
+          "non_comment_lines": 3371
+        },
+        {
+          "area": "tests",
+          "files": 20,
+          "total_lines": 3403,
+          "non_empty_lines": 2609,
+          "non_comment_lines": 2544
+        }
+      ],
+      "python_files": {
+        "alembic_versions": 1,
+        "benchmarks": 4,
+        "demo": 8,
+        "eval_python": 0,
+        "src": 30,
+        "tests": 20
+      }
+    },
+    "api": {
+      "endpoint_count": 10,
+      "by_method": {
+        "DELETE": 1,
+        "GET": 6,
+        "HEAD": 1,
+        "POST": 2
+      }
+    },
+    "prometheus": {
+      "families_total": 14,
+      "families_docmind": 10,
+      "samples_total": 12,
+      "samples_docmind": 2
+    },
+    "dependencies": {
+      "runtime": 20,
+      "dev": 7,
+      "demo": 2
+    },
+    "make": {
+      "target_count": 20,
+      "targets": [
+        "help",
+        "install",
+        "lint",
+        "format",
+        "format-check",
+        "typecheck",
+        "test",
+        "cov",
+        "check",
+        "eval",
+        "eval-seed",
+        "eval-e2e",
+        "demo-fixtures",
+        "up",
+        "down",
+        "logs",
+        "build",
+        "migrate",
+        "revision",
+        "clean"
+      ]
+    },
+    "dataset": {
+      "cases": 25,
+      "answerable": 22,
+      "negative": 3,
+      "corpus_documents": 6,
+      "corpus_words": 1538,
+      "json_bytes": 16251
+    },
+    "tests": {
+      "collected": 243,
+      "exit_code": 0
+    },
+    "coverage": {
+      "statements": 1881,
+      "missed": 520,
+      "coverage_percent": 70,
+      "coverage_percent_exact": 69.57,
+      "passed": 241,
+      "skipped": 2
+    }
+  }
+}

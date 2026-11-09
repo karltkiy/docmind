@@ -25,8 +25,24 @@ _THIRD_PARTY_LOGGERS: tuple[str, ...] = (
 )
 
 
+# Attributes every ``logging.LogRecord`` carries out of the box. Anything else
+# on the record was supplied through ``extra=`` and is therefore structured
+# application data that belongs in the JSON payload. ``message`` and ``asctime``
+# are added by ``logging.Formatter`` itself, so they are reserved as well.
+_STANDARD_RECORD_ATTRIBUTES: frozenset[str] = frozenset(
+    logging.LogRecord("", logging.INFO, "", 0, "", (), None).__dict__
+) | {"message", "asctime"}
+
+
 class JsonFormatter(logging.Formatter):
-    """Render :class:`logging.LogRecord` objects as single-line JSON documents."""
+    """Render :class:`logging.LogRecord` objects as single-line JSON documents.
+
+    Beyond the fixed ``timestamp``/``level``/``logger``/``message`` fields,
+    every non-standard record attribute (i.e. every ``extra`` passed by the
+    caller such as ``request_id``, ``retrieval_ms`` or ``ingestion_ms``) is
+    copied verbatim into the payload. Private keys (prefixed with ``_``) are
+    skipped so internal bookkeeping never leaks into logs.
+    """
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
@@ -35,9 +51,10 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
-        request_id = getattr(record, "request_id", None)
-        if request_id is not None:
-            payload["request_id"] = request_id
+        for key, value in record.__dict__.items():
+            if key in _STANDARD_RECORD_ATTRIBUTES or key.startswith("_"):
+                continue
+            payload[key] = value
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
         if record.stack_info:
@@ -55,11 +72,27 @@ class ConsoleFormatter(logging.Formatter):
         )
 
     def format(self, record: logging.LogRecord) -> str:
-        """Append the correlation id (when present) to the console line."""
+        """Append scalar extras to the console line.
+
+        The correlation id stays first (preserving the established
+        ``[request_id=...]`` suffix), followed by any other simple extras such
+        as ``[retrieval_ms=12.3]``. Nested structures are not printed: the
+        console format is meant to stay short and greppable.
+        """
         message = super().format(record)
         request_id = getattr(record, "request_id", None)
         if request_id is not None:
             message = f"{message} [request_id={request_id}]"
+        extras = sorted(
+            (key, value)
+            for key, value in record.__dict__.items()
+            if key != "request_id"
+            and key not in _STANDARD_RECORD_ATTRIBUTES
+            and not key.startswith("_")
+            and isinstance(value, (str, int, float, bool))
+        )
+        for key, value in extras:
+            message = f"{message} [{key}={value}]"
         return message
 
 

@@ -46,6 +46,9 @@ dev = [
     "mypy>=1.8.0",
     "ruff>=0.3.0",
     "pre-commit>=3.7.0",
+    # The demo data layer is covered by the default test run; keep its HTTP
+    # client available there too so those tests execute instead of skipping.
+    "requests>=2.31.0",
 ]
 
 [tool.hatch.build.targets.wheel]

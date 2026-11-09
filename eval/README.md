@@ -21,3 +21,7 @@ The same steps are available as `make eval-seed`, `make eval` and
 `make eval-e2e`. Runs need PostgreSQL/pgvector and an embedding provider; `e2e`
 also needs an LLM provider. The methodology, metric formulas, thresholds and
 troubleshooting live in [`../docs/EVALUATION.md`](../docs/EVALUATION.md).
+
+The latest retrieval report is curated into `demo/fixtures/retrieval_eval.json`
+(aggregates only, plus the dataset SHA-256 and honest limitations) — run
+`python -m demo.export_fixtures` after a run to republish it.

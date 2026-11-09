@@ -201,6 +201,108 @@ docker volume rm docmind-demo_demo_pg_data docmind-demo_demo_uploads
 # next deploy re-creates the schema and re-seeds the corpus
 ```
 
+### Metrics & evidence page (no model calls)
+
+The UI sidebar switches between two views of the same deployment:
+
+- **Chat & documents** — the live RAG demo; every question costs provider
+  tokens.
+- **Metrics & evidence** — retrieval quality, latency, engineering/CI numbers
+  and a live `/api/v1/metrics` snapshot. It reads
+  [`demo/fixtures/`](../demo/fixtures) (committed measurement artifacts) and
+  issues exactly one HTTP GET to `GET /api/v1/metrics`, which serves the
+  in-process Prometheus registry without touching a database, a filesystem or
+  a model. Opening the page therefore costs **$0** in tokens and cannot
+  exhaust the demo budget.
+
+`?view=metrics` deep-links straight to it (the selection is mirrored back into
+the query string), which is handy for linking from a portfolio page.
+
+Ingestion histograms are recorded in the Arq worker process, so they never
+appear in the API snapshot; the page says so instead of showing a zero.
+
+Regenerate the fixtures after re-measuring (no dependency on the demo stack):
+
+```bash
+python -m benchmarks.static_metrics --with-coverage
+python -m benchmarks.bench --iterations 2000 --warmup 200
+python -m src.eval --mode retrieval --fail-under-hit-rate 0.85 --json-only
+make demo-fixtures          # writes demo/fixtures/*.json, then runs --check
+```
+
+`python -m demo.export_fixtures --check` is the CI guard: it rebuilds the
+fixtures in memory and fails when a committed one is out of date. Fixtures
+older than 120 days are flagged in the UI
+(`DOCMIND_FIXTURE_MAX_AGE_DAYS` overrides the threshold).
+
+### Zero-token demo mode
+
+The public demo sets `DOCMIND_CHAT_MODE=replay`, so the chat tab answers by
+playing back a **recorded** transcript instead of calling the provider. Local
+development defaults to `live`. The mode is resolved by
+[`demo/replay.py`](../demo/replay.py); an explicit value outside
+`replay`/`live` stops the page with a clear configuration error rather than
+silently spending tokens.
+
+A transcript is created exactly once, by a maintainer, from a real request:
+
+```bash
+export DOCMIND_API_KEY=...   # read by name; never printed or stored
+python -m demo.record_transcript \
+  --document refund-policy.md \
+  --question "How long does a refund take?" \
+  --id refund-window
+```
+
+That command performs **one** `POST /api/v1/chat/completions` (one provider
+request, one charge), records the real SSE frames with their `t_ms` timestamps
+and writes `demo/fixtures/transcripts/refund-window.json` plus an idempotent
+entry in `transcripts/index.json` (`document filename -> transcript id`). It
+prints `Recording costs one provider request; replaying this file is free.` The
+API key comes from the environment variable named by `--api-key-env`; its value
+is never printed, logged or written to the transcript. If the key or the
+network is unavailable the command exits with a readable error and creates no
+file.
+
+At runtime the replay path:
+
+- renders the recorded `sources` frames with the same component as a live
+  answer, then streams the recorded tokens through `st.empty()`;
+- divides recorded inter-frame delays by `DOCMIND_REPLAY_SPEED` (default `8.0`),
+  caps every pause at `DOCMIND_REPLAY_MAX_FRAME_MS` (default `150`) and the
+  whole replay at `DOCMIND_REPLAY_MAX_SECONDS` (default `8.0`);
+- shows `st.info("Recorded answer, replayed from a transcript captured <date>
+  with <model>. No model was called for this reply.")` before the answer and
+  `st.caption("replay · recorded <date> · <model>")` after it;
+- **never** calls `POST /chat/completions` and has no "Regenerate"/"Retry"
+  action.
+
+If the selected document has no transcript, the page lists the recordings it
+does have and prints the `python -m demo.record_transcript ...` command. It does
+**not** fall back to a live request. If no recordings are shipped at all (the
+default, because they can only come from a real capture), the page says so.
+
+Guarantees enforced in CI:
+
+- `tests/test_demo_zero_token.py` asserts that `demo/metrics_page.py` and
+  `demo/metrics_data.py` contain neither `chat/completions` nor
+  `requests.post`, and that the only `requests.post(... "/chat/completions")`
+  call in [`demo/app_ui.py`](../demo/app_ui.py) sits inside `_chat_live` (AST
+  check);
+- `tests/test_demo_replay.py` validates the schema: `schema_version == 1`,
+  `kind == "transcript"`, known frame types, non-decreasing `t_ms`, a final
+  `done` frame (or a single `error`), a non-empty frame list, and an
+  `answer_sha256` that matches the concatenated token content;
+- transcripts containing `api_key`, `authorization`, `openai_api_key`, an
+  `sk-` value or an absolute path are rejected by `validate_transcript`;
+- `tests/test_demo_app.py` runs the page in replay mode with `requests.post`
+  patched to raise: the report still renders and no POST happens.
+
+To snapshot the recordings, commit `demo/fixtures/transcripts/*.json` and
+`index.json` together. Re-record after changing chunking, `top_k`, the embedding
+model or the document itself — the transcript describes the answer that was
+actually produced at that time, not a claim about today's output.
+
 ## 7. Reverse proxy and TLS
 
 [`deploy/caddy/Caddyfile.example`](../deploy/caddy/Caddyfile.example) contains both

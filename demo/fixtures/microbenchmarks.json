@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "kind": "microbenchmarks",
+  "generated_at": "2026-11-09T14:57:11+00:00",
+  "provenance": {
+    "git_commit": "0f52e5483fd55139a2e218a9b5b9189b7f6803b4",
+    "git_dirty": false,
+    "source_command": "python -m benchmarks.bench --iterations 2000 --warmup 200",
+    "source_artifacts": [
+      "benchmarks/results/latest.json"
+    ],
+    "environment": {
+      "python": "3.14.8",
+      "platform": "Windows-11-10.0.26300-SP0",
+      "processor": "AMD64 Family 25 Model 68 Stepping 1, AuthenticAMD",
+      "cpu_count": 12
+    },
+    "exported_at": "2026-11-09T16:45:26+00:00"
+  },
+  "limitations": [
+    "25-case self-built retrieval set, not an industry benchmark",
+    "no similarity cut-off, negative cases still receive top-k context",
+    "latency measured on a single machine, not an SLA",
+    "hit@k depends on chunk_size/top_k/embedding model",
+    "micro-benchmarks run in-process on one machine; they are not a load test",
+    "percentiles are reconstructed from histogram buckets and are approximate",
+    "ingestion latency needs a live database, an embedding provider and the Arq worker, so it is not part of these fixtures"
+  ],
+  "payload": {
+    "platform": {
+      "python": "3.14.8",
+      "platform": "Windows-11-10.0.26300-SP0",
+      "processor": "AMD64 Family 25 Model 68 Stepping 1, AuthenticAMD",
+      "cpu_count": 12,
+      "iterations": 2000,
+      "warmup": 200,
+      "repeats": 5
+    },
+    "stages": [
+      {
+        "name": "HTTP middleware (instrumented)",
+        "unit": "µs/request",
+        "mean": 222.17310016276315,
+        "p50": 207.35000725835562,
+        "p95": 308.42001433484256
+      },
+      {
+        "name": "metrics snapshot()",
+        "unit": "µs/call",
+        "mean": 2238.3956001140177,
+        "p50": 2166.5500244125724,
+        "p95": 2519.455092260614
+      },
+      {
+        "name": "eval scoring (25 cases)",
+        "unit": "ms/dataset run",
+        "mean": 1.7357050033751875,
+        "p50": 1.698849955573678,
+        "p95": 1.9171200401615351
+      },
+      {
+        "name": "eval report build",
+        "unit": "ms/report",
+        "mean": 0.14181500300765038,
+        "p50": 0.1354999840259552,
+        "p95": 0.16868000384420156
+      },
+      {
+        "name": "chunker (0.95 MiB text)",
+        "unit": "ms/pass",
+        "mean": 27.955379988998175,
+        "p50": 27.784200035966933,
+        "p95": 28.34857990965247
+      },
+      {
+        "name": "corpus sha256 (6 files)",
+        "unit": "ms/file",
+        "mean": 0.08402512466030505,
+        "p50": 0.07890001870691776,
+        "p95": 0.10660510743036859
+      }
+    ],
+    "throughput": {
+      "chunker_mib_per_sec": 34.06,
+      "chunker_chunks_per_sec": 12590.575,
+      "snapshot_ops_per_sec": 446.68679229541885,
+      "eval_cases_per_sec": 14401.004616366874,
+      "report_build_ops_per_sec": 7042.253590777348,
+      "corpus_files_per_sec": 11846.994876810115
+    },
+    "middleware_overhead": {
+      "baseline_p50_us": 192.40000983700156,
+      "instrumented_p50_us": 207.35000725835562,
+      "delta_p50_us": 14.949997421354055,
+      "delta_mean_pct": 6.909798109263397,
+      "delta_p95_pct": 7.799599450363217
+    },
+    "not_measured": [
+      {
+        "metric": "ingestion median (parse → chunk → embed → database write)",
+        "reason": "runs in the Arq worker process against a live PostgreSQL/pgvector and an embedding provider, so it cannot be reproduced from committed in-process benchmarks"
+      }
+    ]
+  }
+}

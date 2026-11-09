@@ -256,6 +256,11 @@ services:
       DOCMIND_DEMO_MODE: "1"
       DOCMIND_DEMO_MAX_QUESTION_CHARS: ${DOCMIND_DEMO_MAX_QUESTION_CHARS:-500}
       DOCMIND_DEMO_TOP_K: ${DOCMIND_DEMO_TOP_K:-4}
+      # Public demo default: replay recorded transcripts and call no model.
+      # Set to "live" only if you accept that every visitor question spends
+      # provider tokens.
+      DOCMIND_CHAT_MODE: ${DOCMIND_CHAT_MODE:-replay}
+      DOCMIND_FIXTURE_MAX_AGE_DAYS: ${DOCMIND_FIXTURE_MAX_AGE_DAYS:-120}
     ports:
       # Loopback only; the public entrypoint is the Caddy vhost for
       # demo.<domain>, which also terminates TLS.

@@ -409,6 +409,68 @@ def test_score_case_with_answer_fills_answer_metrics() -> None:
     assert result.refusal_detected is False
 
 
+def test_score_case_prefers_full_content_over_truncated_excerpt() -> None:
+    """Evidence past the 300-character excerpt boundary must still be found."""
+    full_text = ("padding " * 60) + "Refunds take ten business days."
+    assert "ten business days" not in full_text[:300]
+
+    case = _golden_case(evidence=(("refund-policy.md", "ten business days"),))
+    with_content = eval_module._score_case(
+        case,
+        top_k=1,
+        retrieved=[
+            {
+                "filename": "refund-policy.md",
+                "chunk_index": 0,
+                "score": 0.9,
+                "excerpt": full_text[:300],
+                "_content": full_text,
+            }
+        ],
+        answer=None,
+        latency_ms=1.0,
+    )
+    assert with_content.context_recall == 1.0
+
+    excerpt_only = eval_module._score_case(
+        case,
+        top_k=1,
+        retrieved=[_chunk("refund-policy.md", full_text[:300])],
+        answer=None,
+        latency_ms=1.0,
+    )
+    assert excerpt_only.context_recall == 0.0
+
+
+def test_case_result_to_dict_strips_private_retrieval_keys() -> None:
+    result = eval_module._score_case(
+        _golden_case(evidence=(("refund-policy.md", "ten business days"),)),
+        top_k=1,
+        retrieved=[
+            {
+                "filename": "refund-policy.md",
+                "chunk_index": 0,
+                "score": 0.9,
+                "excerpt": "Refunds take ten business days.",
+                "_content": "Refunds take ten business days. " + "x" * 500,
+            }
+        ],
+        answer=None,
+        latency_ms=1.0,
+    )
+
+    payload = result.to_dict()
+    assert payload["retrieved"] == [
+        {
+            "filename": "refund-policy.md",
+            "chunk_index": 0,
+            "score": 0.9,
+            "excerpt": "Refunds take ten business days.",
+        }
+    ]
+    assert all(not key.startswith("_") for item in payload["retrieved"] for key in item)
+
+
 def _scored_cases() -> tuple[eval_module.CaseResult, eval_module.CaseResult]:
     good = eval_module._score_case(
         _golden_case("q-good", facts=("ten business days",)),
