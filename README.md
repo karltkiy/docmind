@@ -172,6 +172,7 @@ curl -N -X POST http://localhost:8000/api/v1/chat/completions \
 | `POST` | `/api/v1/chat/completions` | `200` | `text/event-stream` (SSE frames below) — `429` rate-limited |
 | `GET` | `/health` | `200` / `503` | JSON `{status, database, redis, version, environment, provider_ready}` |
 | `GET` | `/metrics` | `200` | Prometheus exposition (`METRICS_ENABLED`, `404` when disabled) |
+| `GET` | `/api/v1/metrics` | `200` | JSON `MetricsResponse` snapshot (counters + latency summary); requires `X-API-Key`, unlike the open Prometheus `GET /metrics` |
 | `GET` | `/` | `200` | JSON `{name, version, docs}` |
 
 Every `/api/v1/*` route requires the `X-API-Key` header when `API_KEY` is set
@@ -308,6 +309,79 @@ mypy src        # static typing (pydantic plugin enabled)
 The test suite covers the SSE frame contract, source serialization, text
 chunking invariants, file parsing, and vector-store query construction.
 
+## Performance & Evaluation
+
+Every request carries a timing header and the pipeline exports dedicated
+histograms, so latency can be inspected without a profiling session. A
+repeatable golden-dataset harness turns those numbers into a regression signal.
+
+### Latency instrumentation
+
+| Signal | Where it is produced | How to read it |
+| --- | --- | --- |
+| `X-Response-Time-Ms` | [`src/metrics.py`](src/metrics.py:143) (`MetricsMiddleware`, pure ASGI) | Returned on **every** response, even when `METRICS_ENABLED=False`; it is TTFB — time to `http.response.start`, not the full SSE stream |
+| `docmind_retrieval_duration_seconds` | [`src/api/v1/chat.py`](src/api/v1/chat.py) | Histogram, label `outcome` (`success`/`error`); also `latency_ms.retrieval` in the JSON snapshot |
+| `docmind_chat_time_to_first_token_seconds` | [`src/api/v1/chat.py`](src/api/v1/chat.py) | Histogram, label `outcome`; `latency_ms.chat_time_to_first_token` |
+| `docmind_ingestion_duration_seconds` | [`src/worker/tasks.py`](src/worker/tasks.py) | Histogram, label `status` (`completed`/`failed`); `latency_ms.ingestion` |
+| `docmind_started_at_seconds` | [`src/metrics.py`](src/metrics.py:114) | Gauge with the process start time (unix seconds) |
+| `GET /metrics` | [`src/main.py`](src/main.py) | Prometheus exposition, **open** (no API key) |
+| `GET /api/v1/metrics` | [`src/api/v1/metrics.py`](src/api/v1/metrics.py) | JSON summary, **requires** `X-API-Key` like the rest of `/api/v1/*` |
+
+### Running the evaluation harness
+
+```bash
+# 1. Index the eval corpus (idempotent; polls until every file is completed)
+python -m src.eval --mode retrieval --seed
+
+# 2. Retrieval-only baseline; exits non-zero below 85% hit@4
+python -m src.eval --mode retrieval --fail-under-hit-rate 0.85 --json-only
+
+# 3. Optional end-to-end run against the live API (SSE answers)
+python -m src.eval --mode e2e --base-url http://127.0.0.1:8000
+```
+
+Equivalent Make targets: `make eval-seed`, `make eval`, `make eval-e2e`. Reports
+land in `eval/reports/latest.json` (git-ignored). Omitting `--seed` skips the
+upload and assumes the corpus is already indexed; add `--semantic` to score
+embedding-based faithfulness (needs the embedding provider). Exit code `0` means
+the run passed; `1` means a threshold breach, a failed case or an environmental
+error.
+
+### Benchmark results
+
+> Numbers below are **placeholders** (`__`) and have not been measured on a real
+> deployment; they exist only to fix the reporting format.
+
+| Metric | Baseline (retrieval) | Notes |
+| --- | --- | --- |
+| Average retrieval latency | `__ ms` | Placeholder — `summary.latency_ms.mean` from the retrieval run |
+| P95 retrieval latency | `__ ms` | Placeholder — `summary.latency_ms.p95` (bucket-interpolated) |
+| Hit rate @ k=4 | `__ %` | Placeholder — `summary.hit_at_k` over answerable cases |
+| Context recall | `__ %` | Placeholder — expected `must_contain` evidence found in retrieved excerpts |
+| Lexical faithfulness (e2e) | `__ %` | Placeholder — `summary.lexical_faithfulness`, `--mode e2e` |
+| Token F1 vs reference (e2e) | `__ %` | Placeholder — `summary.token_f1` against `expected_answer` |
+
+These values come from `python -m src.eval --mode retrieval` and
+`python -m src.eval --mode e2e` on the 25-case golden dataset and are to be
+replaced with the results of a run on the target environment.
+
+### Interpretation & limits
+
+- **TTFB is not stream duration.** `X-Response-Time-Ms` stops at
+  `http.response.start`, so for SSE it measures retrieval plus time to the first
+  token, not the complete answer. Use
+  `docmind_chat_time_to_first_token_seconds` for the streaming view.
+- **Percentiles are approximate.** They are reconstructed from histogram bucket
+  counts with linear interpolation, and `max` is the upper bound of the last
+  finite bucket — a coarse ceiling, not the true maximum.
+- **Metrics are process-local.** Counters and histograms live in one Python
+  process. With more than one uvicorn worker the snapshot only reflects the
+  worker that served the request; Prometheus aggregation would need
+  `PROMETHEUS_MULTIPROC_DIR` plus `MultiProcessCollector`, which is not
+  implemented yet.
+- **`hit@k` depends on chunking.** `CHUNK_SIZE`/`CHUNK_OVERLAP` change how
+  documents are split, so compare runs only under identical chunking settings.
+
 ## CI/CD & Deployment
 
 Delivery is fully automated: pull requests are gated, `main` produces a signed
@@ -436,7 +510,8 @@ docmind/
 ├── deploy/
 │   └── nginx/docmind.conf.example   # SSE-aware reverse-proxy sample
 ├── docs/
-│   └── DEPLOYMENT.md                # Zero-to-production deployment guide
+│   ├── DEPLOYMENT.md                # Zero-to-production deployment guide
+│   └── EVALUATION.md                # Evaluation methodology and metric formulas
 ├── alembic/
 │   ├── env.py                       # Async Alembic environment
 │   └── versions/0001_initial.py     # vector extension + HNSW index
@@ -450,9 +525,14 @@ docmind/
 ├── .env.example                     # Documented configuration template
 ├── demo/
 │   └── app_ui.py                    # Streamlit demo client
+├── eval/
+│   ├── README.md                    # Quick start for the evaluation harness
+│   ├── golden_dataset.json          # 25-case golden dataset (+ corpus checksums)
+│   └── corpus/                      # Six markdown documents used by the dataset
 ├── src/
 │   ├── main.py                      # App factory, lifespan, /health, /metrics, request-id
 │   ├── config.py                    # Pydantic v2 settings + validators
+│   ├── eval.py                      # Offline evaluation harness (python -m src.eval)
 │   ├── logging_config.py            # JSON / console structured logging
 │   ├── metrics.py                   # Prometheus counters/gauges
 │   ├── api/
@@ -460,12 +540,13 @@ docmind/
 │   │   └── v1/
 │   │       ├── router.py            # Aggregates v1 routers
 │   │       ├── documents.py         # Upload, paginated list, status, delete
-│   │       └── chat.py              # SSE-streamed grounded answers
+│   │       ├── chat.py              # SSE-streamed grounded answers
+│   │       └── metrics.py           # JSON metrics snapshot (API-key protected)
 │   ├── db/
 │   │   ├── base.py                  # Async engine, session factory, deps
 │   │   ├── models.py                # Document, DocumentChunk (pgvector)
 │   │   └── schema_guard.py          # Startup embedding-dimension guard
-│   ├── schemas/                     # Pydantic request/response + SSE types
+│   ├── schemas/                     # Pydantic request/response + SSE and metrics types
 │   ├── services/
 │   │   ├── rag_engine.py            # Provider-agnostic LLM + embeddings
 │   │   ├── vector_store.py          # Cosine similarity search
@@ -479,7 +560,9 @@ docmind/
     ├── test_api.py
     ├── test_chat_sse.py
     ├── test_chunker.py
+    ├── test_eval.py               # Golden-dataset metrics (no DB, no network)
     ├── test_integration_db.py     # Real PostgreSQL+pgvector (skipped without a DB)
+    ├── test_metrics_endpoint.py   # JSON /api/v1/metrics schema + snapshot
     ├── test_metrics_middleware.py # SSE pass-through + metrics instrumentation
     ├── test_parser.py
     ├── test_security.py           # API-key auth + rate limiter

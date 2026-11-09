@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 from ..deps import require_api_key
 from .chat import router as chat_router
 from .documents import router as documents_router
+from .metrics import router as metrics_router
 
 api_router = APIRouter()
 api_router.include_router(
@@ -17,5 +18,10 @@ api_router.include_router(
     chat_router,
     prefix="/chat",
     tags=["chat"],
+    dependencies=[Depends(require_api_key)],
+)
+api_router.include_router(
+    metrics_router,
+    prefix="/metrics",
     dependencies=[Depends(require_api_key)],
 )

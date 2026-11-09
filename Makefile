@@ -12,7 +12,7 @@ COV_FAIL_UNDER ?= 60
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install lint format format-check typecheck test cov check up down logs build migrate revision clean
+.PHONY: help install lint format format-check typecheck test cov check up down logs build migrate revision clean eval eval-seed eval-e2e
 
 help: ## Show this help.
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -44,6 +44,15 @@ cov: ## Run tests with coverage and enforce the gate.
 		--cov-fail-under=$(COV_FAIL_UNDER)
 
 check: lint format-check typecheck cov ## Full local quality gate (mirrors CI).
+
+eval: ## Retrieval baseline; fails below 85% hit@4 (needs a live DB).
+	$(PY) -m src.eval --mode retrieval --fail-under-hit-rate 0.85 --json-only
+
+eval-seed: ## Upload the eval corpus through the API and wait for indexing.
+	$(PY) -m src.eval --mode retrieval --seed
+
+eval-e2e: ## End-to-end run against a live API (SSE answers).
+	$(PY) -m src.eval --mode e2e --base-url http://127.0.0.1:8000
 
 up: ## Start the full local stack.
 	$(COMPOSE) up --build -d

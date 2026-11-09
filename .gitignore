@@ -15,6 +15,9 @@ __pycache__/
 coverage.xml
 htmlcov/
 
+# Generated retrieval evaluation reports (recreate with `python -m src.eval`).
+eval/reports/
+
 # Deployment state and backups (written on the production and demo hosts)
 .deployed_image_tag
 .deployed_demo_image_tag

@@ -1,0 +1,428 @@
+{
+  "version": 1,
+  "corpus": [
+    {
+      "filename": "data-retention.md",
+      "sha256": "6d81b0f079d89180313308f4618524b3492a03b56a67ebcf536de9142a73c16d"
+    },
+    {
+      "filename": "onboarding-guide.md",
+      "sha256": "e38165f66e6052f4dc74ed05970b1e16f88e41274c7dd17caacdac1dffe3e628"
+    },
+    {
+      "filename": "pricing-plans.md",
+      "sha256": "7aae100c85624f30699ac5aa35dcd058317ff318a817123075205f94768e2268"
+    },
+    {
+      "filename": "refund-policy.md",
+      "sha256": "75b1ad8aa35596cadc311d1c039b7217056bf845733388fe8b6b6461c752faab"
+    },
+    {
+      "filename": "security-overview.md",
+      "sha256": "89220863e24ac50c4ae3a81086cb5eaf46b3a7d65ebf5006fca7fb8f40ab46ff"
+    },
+    {
+      "filename": "support-sla.md",
+      "sha256": "8b185db96434f9617f0f62b9e59ea174b8f5cc3cb7c419eb59a292e16546c730"
+    }
+  ],
+  "cases": [
+    {
+      "id": "q-001",
+      "question": "How long does a customer have to request a full refund on a new subscription?",
+      "tag": "policy",
+      "difficulty": "easy",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["refund-policy.md"],
+      "expected_evidence": [
+        {"filename": "refund-policy.md", "must_contain": "within 30 days of purchase"}
+      ],
+      "expected_answer": "A new subscription can be refunded in full within 30 days of purchase.",
+      "expected_answer_facts": ["30 days of purchase"],
+      "answerable": true,
+      "notes": "Direct lookup of the refund window."
+    },
+    {
+      "id": "q-002",
+      "question": "How long does an approved refund take to reach the original payment method?",
+      "tag": "policy",
+      "difficulty": "medium",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["refund-policy.md"],
+      "expected_evidence": [
+        {"filename": "refund-policy.md", "must_contain": "within ten business days"}
+      ],
+      "expected_answer": "Once approved, the refund is issued within ten business days to the original payment method.",
+      "expected_answer_facts": ["ten business days"],
+      "answerable": true,
+      "notes": "Processing time after approval."
+    },
+    {
+      "id": "q-003",
+      "question": "Is there a fee when a customer returns hardware that has already been opened?",
+      "tag": "policy",
+      "difficulty": "medium",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["refund-policy.md"],
+      "expected_evidence": [
+        {"filename": "refund-policy.md", "must_contain": "15% restocking fee"}
+      ],
+      "expected_answer": "Yes. Hardware that has been unboxed and connected to a network carries a 15% restocking fee.",
+      "expected_answer_facts": ["15% restocking fee"],
+      "answerable": true,
+      "notes": "Numeric detail in the hardware section."
+    },
+    {
+      "id": "q-004",
+      "question": "After the first 30 days, can a customer get money back for unused months of an annual plan?",
+      "tag": "policy",
+      "difficulty": "hard",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["refund-policy.md"],
+      "expected_evidence": [
+        {"filename": "refund-policy.md", "must_contain": "unused months cannot be refunded"}
+      ],
+      "expected_answer": "No. After the first 30 days, unused months of an annual plan cannot be refunded, but they can be applied to a future renewal.",
+      "expected_answer_facts": ["unused months cannot be refunded", "future renewal"],
+      "answerable": true,
+      "notes": "Borderline: the answer requires combining the refund window with the annual-plan exception."
+    },
+    {
+      "id": "q-005",
+      "question": "What is the first response target for a P1 outage?",
+      "tag": "sla",
+      "difficulty": "easy",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["support-sla.md"],
+      "expected_evidence": [
+        {"filename": "support-sla.md", "must_contain": "first response target for p1 is 15 minutes"}
+      ],
+      "expected_answer": "The first response target for P1 is 15 minutes, measured from the moment the ticket is created.",
+      "expected_answer_facts": ["15 minutes"],
+      "answerable": true,
+      "notes": "Severity-to-response mapping."
+    },
+    {
+      "id": "q-006",
+      "question": "What monthly uptime does the Team plan commit to?",
+      "tag": "sla",
+      "difficulty": "easy",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["support-sla.md"],
+      "expected_evidence": [
+        {
+          "filename": "support-sla.md",
+          "must_contain": "monthly uptime commitment for the team plan is 99.95%"
+        }
+      ],
+      "expected_answer": "The Team plan commits to 99.95% monthly uptime on the chat completion endpoint.",
+      "expected_answer_facts": ["99.95%"],
+      "answerable": true,
+      "notes": "Uptime commitment for the Team plan."
+    },
+    {
+      "id": "q-007",
+      "question": "What service credit applies when monthly uptime falls below 99.5%?",
+      "tag": "sla",
+      "difficulty": "medium",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["support-sla.md"],
+      "expected_evidence": [
+        {"filename": "support-sla.md", "must_contain": "credit rises to 25%"}
+      ],
+      "expected_answer": "When uptime falls below 99.5%, the customer receives a 25% monthly service credit.",
+      "expected_answer_facts": ["25%"],
+      "answerable": true,
+      "notes": "Two thresholds must not be confused: 10% below 99.95%, 25% below 99.5%."
+    },
+    {
+      "id": "q-008",
+      "question": "During which hours are P3 tickets handled?",
+      "tag": "sla",
+      "difficulty": "hard",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["support-sla.md"],
+      "expected_evidence": [
+        {"filename": "support-sla.md", "must_contain": "business hours from 09:00 to 18:00 cet"}
+      ],
+      "expected_answer": "P3 tickets are handled during business hours from 09:00 to 18:00 CET.",
+      "expected_answer_facts": ["09:00 to 18:00 cet"],
+      "answerable": true,
+      "notes": "Borderline: the support-hours clause sits in the response-target paragraph."
+    },
+    {
+      "id": "q-009",
+      "question": "How much does the Starter plan cost per month?",
+      "tag": "pricing",
+      "difficulty": "easy",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["pricing-plans.md"],
+      "expected_evidence": [
+        {"filename": "pricing-plans.md", "must_contain": "49 usd per month"}
+      ],
+      "expected_answer": "The Starter plan costs 49 USD per month.",
+      "expected_answer_facts": ["49 usd per month"],
+      "answerable": true,
+      "notes": "Base price lookup."
+    },
+    {
+      "id": "q-010",
+      "question": "How many seats are included in the Team plan?",
+      "tag": "pricing",
+      "difficulty": "medium",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["pricing-plans.md"],
+      "expected_evidence": [
+        {"filename": "pricing-plans.md", "must_contain": "up to 25 seats"}
+      ],
+      "expected_answer": "The Team plan includes up to 25 seats, and additional seats cost 9 USD each per month.",
+      "expected_answer_facts": ["25 seats"],
+      "answerable": true,
+      "notes": "Seat quota plus the additional-seat price."
+    },
+    {
+      "id": "q-011",
+      "question": "What is the price of requests above the plan quota?",
+      "tag": "pricing",
+      "difficulty": "medium",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["pricing-plans.md"],
+      "expected_evidence": [
+        {"filename": "pricing-plans.md", "must_contain": "0.02 usd per api call"}
+      ],
+      "expected_answer": "Requests above the plan quota are billed at 0.02 USD per API call, capped at 35% of the base monthly fee.",
+      "expected_answer_facts": ["0.02 usd per api call"],
+      "answerable": true,
+      "notes": "Overage rate and its cap."
+    },
+    {
+      "id": "q-012",
+      "question": "What discount is offered for annual billing?",
+      "tag": "pricing",
+      "difficulty": "easy",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["pricing-plans.md"],
+      "expected_evidence": [
+        {"filename": "pricing-plans.md", "must_contain": "annual billing receives a 20% discount"}
+      ],
+      "expected_answer": "Annual billing receives a 20% discount compared with twelve monthly payments.",
+      "expected_answer_facts": ["20% discount"],
+      "answerable": true,
+      "notes": "Discount percentage."
+    },
+    {
+      "id": "q-013",
+      "question": "What is the minimum contract term for the Enterprise plan?",
+      "tag": "pricing",
+      "difficulty": "hard",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["pricing-plans.md"],
+      "expected_evidence": [
+        {"filename": "pricing-plans.md", "must_contain": "12-month minimum term"}
+      ],
+      "expected_answer": "Every Enterprise contract has a 12-month minimum term.",
+      "expected_answer_facts": ["12-month minimum term"],
+      "answerable": true,
+      "notes": "Borderline: term length is stated in the last sentence of the Enterprise section."
+    },
+    {
+      "id": "q-014",
+      "question": "How long is the standard onboarding program?",
+      "tag": "onboarding",
+      "difficulty": "easy",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["onboarding-guide.md"],
+      "expected_evidence": [
+        {"filename": "onboarding-guide.md", "must_contain": "14-day onboarding"}
+      ],
+      "expected_answer": "Onboarding is a structured 14-day onboarding program that runs from contract signature to the first production query.",
+      "expected_answer_facts": ["14-day"],
+      "answerable": true,
+      "notes": "Program duration."
+    },
+    {
+      "id": "q-015",
+      "question": "When is the kickoff call scheduled?",
+      "tag": "onboarding",
+      "difficulty": "medium",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["onboarding-guide.md"],
+      "expected_evidence": [
+        {"filename": "onboarding-guide.md", "must_contain": "within two business days"}
+      ],
+      "expected_answer": "The kickoff call is scheduled within two business days of contract signature.",
+      "expected_answer_facts": ["two business days"],
+      "answerable": true,
+      "notes": "Onboarding milestone."
+    },
+    {
+      "id": "q-016",
+      "question": "How quickly is single sign-on configured for a supported identity provider?",
+      "tag": "onboarding",
+      "difficulty": "medium",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["onboarding-guide.md"],
+      "expected_evidence": [
+        {"filename": "onboarding-guide.md", "must_contain": "within five business days"}
+      ],
+      "expected_answer": "Single sign-on is configured within five business days when the customer uses a supported identity provider.",
+      "expected_answer_facts": ["five business days"],
+      "answerable": true,
+      "notes": "SSO provisioning target."
+    },
+    {
+      "id": "q-017",
+      "question": "How is customer data at rest encrypted?",
+      "tag": "security",
+      "difficulty": "easy",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["security-overview.md"],
+      "expected_evidence": [
+        {"filename": "security-overview.md", "must_contain": "aes-256 encryption"}
+      ],
+      "expected_answer": "Data at rest is encrypted with AES-256 encryption on managed disks and object storage.",
+      "expected_answer_facts": ["aes-256"],
+      "answerable": true,
+      "notes": "Encryption standard at rest."
+    },
+    {
+      "id": "q-018",
+      "question": "Which compliance report does DocMind hold?",
+      "tag": "security",
+      "difficulty": "medium",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["security-overview.md"],
+      "expected_evidence": [
+        {"filename": "security-overview.md", "must_contain": "soc 2 type ii"}
+      ],
+      "expected_answer": "DocMind holds a SOC 2 Type II report covering security and availability.",
+      "expected_answer_facts": ["soc 2 type ii"],
+      "answerable": true,
+      "notes": "Certification lookup."
+    },
+    {
+      "id": "q-019",
+      "question": "Which TLS version is required for public endpoints?",
+      "tag": "security",
+      "difficulty": "hard",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["security-overview.md"],
+      "expected_evidence": [
+        {"filename": "security-overview.md", "must_contain": "tls 1.3"}
+      ],
+      "expected_answer": "Public endpoints are protected with TLS 1.3, and older protocol versions are refused at the load balancer.",
+      "expected_answer_facts": ["tls 1.3"],
+      "answerable": true,
+      "notes": "Borderline: distinguish transport encryption from encryption at rest."
+    },
+    {
+      "id": "q-020",
+      "question": "Is multi-factor authentication required for administrators?",
+      "tag": "security",
+      "difficulty": "medium",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["security-overview.md"],
+      "expected_evidence": [
+        {"filename": "security-overview.md", "must_contain": "multi-factor authentication"}
+      ],
+      "expected_answer": "Yes. Administrators must enable multi-factor authentication, which is enforced for every user who can read customer documents.",
+      "expected_answer_facts": ["multi-factor authentication"],
+      "answerable": true,
+      "notes": "Access-control requirement."
+    },
+    {
+      "id": "q-021",
+      "question": "How long is customer data retained after a subscription is cancelled?",
+      "tag": "policy",
+      "difficulty": "easy",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["data-retention.md"],
+      "expected_evidence": [
+        {"filename": "data-retention.md", "must_contain": "retained for 90 days"}
+      ],
+      "expected_answer": "After cancellation, customer data is retained for 90 days to allow reactivation.",
+      "expected_answer_facts": ["90 days"],
+      "answerable": true,
+      "notes": "Post-cancellation retention window."
+    },
+    {
+      "id": "q-022",
+      "question": "How long are encrypted backups retained?",
+      "tag": "policy",
+      "difficulty": "medium",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": ["data-retention.md"],
+      "expected_evidence": [
+        {"filename": "data-retention.md", "must_contain": "retained for 35 days"}
+      ],
+      "expected_answer": "Encrypted backups are retained for 35 days and are used only for disaster recovery.",
+      "expected_answer_facts": ["35 days"],
+      "answerable": true,
+      "notes": "Backup retention."
+    },
+    {
+      "id": "q-023",
+      "question": "What is the home address of the chief executive officer?",
+      "tag": "negative",
+      "difficulty": "easy",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": [],
+      "expected_evidence": [],
+      "expected_answer": "I don't know.",
+      "expected_answer_facts": [],
+      "answerable": false,
+      "notes": "Personal data that is never present in the corpus."
+    },
+    {
+      "id": "q-024",
+      "question": "Does DocMind include a free cryptocurrency mining add-on?",
+      "tag": "negative",
+      "difficulty": "easy",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": [],
+      "expected_evidence": [],
+      "expected_answer": "I don't know.",
+      "expected_answer_facts": [],
+      "answerable": false,
+      "notes": "Unrelated product feature."
+    },
+    {
+      "id": "q-025",
+      "question": "What is the warranty period for the physical robot arm that DocMind sells?",
+      "tag": "negative",
+      "difficulty": "medium",
+      "top_k": 4,
+      "document_ids": null,
+      "expected_documents": [],
+      "expected_evidence": [],
+      "expected_answer": "I don't know.",
+      "expected_answer_facts": [],
+      "answerable": false,
+      "notes": "Hardware is mentioned, but no robot arm or warranty terms exist in the corpus."
+    }
+  ]
+}
