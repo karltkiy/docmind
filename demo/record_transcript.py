@@ -53,6 +53,16 @@ DEFAULT_BASE_URL = os.getenv("DOCMIND_API_URL", "http://localhost:8000/api/v1").
 #: Environment variable holding the API key by default.
 DEFAULT_API_KEY_ENV = "DOCMIND_API_KEY"
 
+#: Fixed diagnostic used when the credential is absent. Deliberately a constant
+#: with no interpolation: printing a credential-adjacent variable name puts
+#: sensitive-looking text on stderr and trips static analysis for clear-text
+#: logging of sensitive information (CWE-532).
+MISSING_KEY_MESSAGE = (
+    "error: the API key environment variable is not set. The key is read from the "
+    "environment, never printed and never written to the transcript. Use --api-key-env "
+    "to point at a different variable name."
+)
+
 #: Transcript ids are file stems, so keep them filesystem-safe.
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
@@ -83,6 +93,16 @@ def _requests_module() -> Any:
 def _auth_headers(api_key: str) -> dict[str, str]:
     """Return the auth header; the value never leaves this mapping."""
     return {"X-API-Key": api_key} if api_key else {}
+
+
+def _read_api_key(env_name: str) -> str | None:
+    """Return the credential from ``env_name``, or ``None`` when it is blank.
+
+    Kept in its own function so the value never flows into a log statement: the
+    CLI layer only consumes the presence/absence result.
+    """
+    value = os.getenv(env_name, "").strip()
+    return value or None
 
 
 def _git_commit() -> str:
@@ -196,12 +216,9 @@ def capture(
 
     status = getattr(response, "status_code", 200)
     if status >= 400:
-        try:
-            detail = response.text[:200]
-        except Exception:  # noqa: BLE001 - diagnostics must never mask the error
-            detail = ""
-        suffix = f": {detail}" if detail else ""
-        raise RecordTranscriptError(f"the API answered HTTP {status}{suffix}")
+        # The response body is deliberately not echoed: it is untrusted mirror
+        # output and may contain request headers, including the credential.
+        raise RecordTranscriptError(f"the API answered HTTP {status}")
 
     frames: list[dict[str, Any]] = []
     retrieval_ms: int | None = None
@@ -241,7 +258,7 @@ def capture(
                 frames.append({"t_ms": t_ms, "type": "token", "content": content})
                 first_token_ms = t_ms if first_token_ms is None else first_token_ms
             elif frame_type == "error":
-                message = str(payload.get("message") or "unknown error")
+                message = str(payload.get("message") or "unknown error")[:200]
                 raise RecordTranscriptError(f"the API returned an error frame: {message}")
             elif frame_type == "done":
                 frames.append({"t_ms": t_ms, "type": "done"})
@@ -423,13 +440,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    api_key = os.getenv(args.api_key_env, "").strip()
-    if not api_key:
-        print(
-            f"error: {args.api_key_env} is not set. The key is read from the environment, "
-            "never printed and never written to the transcript.",
-            file=sys.stderr,
-        )
+    api_key = _read_api_key(args.api_key_env)
+    if api_key is None:
+        print(MISSING_KEY_MESSAGE, file=sys.stderr)
         return 2
 
     base_url = args.base_url.rstrip("/")

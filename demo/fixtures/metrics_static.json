@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "kind": "metrics_static",
-  "generated_at": "2026-11-09T16:16:27+00:00",
+  "generated_at": "2026-11-09T16:30:25+00:00",
   "provenance": {
-    "git_commit": "c6255eb695f822e2cb9e1eca02154ad08f8a3fa7",
+    "git_commit": "b7a5be527c27ba5bec1c6501e60c97dc4040c2cb",
     "git_dirty": true,
     "source_command": "python -m benchmarks.static_metrics --with-coverage",
     "source_artifacts": [
@@ -15,7 +15,7 @@
       "processor": "AMD64 Family 25 Model 68 Stepping 1, AuthenticAMD",
       "cpu_count": 12
     },
-    "exported_at": "2026-11-09T16:17:27+00:00"
+    "exported_at": "2026-11-09T16:31:25+00:00"
   },
   "limitations": [
     "25-case self-built retrieval set, not an industry benchmark",
@@ -46,9 +46,9 @@
         {
           "area": "demo",
           "files": 8,
-          "total_lines": 3575,
-          "non_empty_lines": 3049,
-          "non_comment_lines": 2908
+          "total_lines": 3588,
+          "non_empty_lines": 3058,
+          "non_comment_lines": 2911
         },
         {
           "area": "eval_json",
@@ -80,10 +80,10 @@
         },
         {
           "area": "tests",
-          "files": 19,
-          "total_lines": 3242,
-          "non_empty_lines": 2490,
-          "non_comment_lines": 2427
+          "files": 20,
+          "total_lines": 3342,
+          "non_empty_lines": 2566,
+          "non_comment_lines": 2501
         }
       ],
       "python_files": {
@@ -92,7 +92,7 @@
         "demo": 8,
         "eval_python": 0,
         "src": 30,
-        "tests": 19
+        "tests": 20
       }
     },
     "api": {
@@ -149,7 +149,7 @@
       "json_bytes": 16251
     },
     "tests": {
-      "collected": 234,
+      "collected": 240,
       "exit_code": 0
     },
     "coverage": {
@@ -157,7 +157,7 @@
       "missed": 520,
       "coverage_percent": 70,
       "coverage_percent_exact": 69.57,
-      "passed": 232,
+      "passed": 238,
       "skipped": 2
     }
   }

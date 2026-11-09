@@ -3,7 +3,7 @@
   "kind": "microbenchmarks",
   "generated_at": "2026-11-09T14:57:11+00:00",
   "provenance": {
-    "git_commit": "c6255eb695f822e2cb9e1eca02154ad08f8a3fa7",
+    "git_commit": "b7a5be527c27ba5bec1c6501e60c97dc4040c2cb",
     "git_dirty": true,
     "source_command": "python -m benchmarks.bench --iterations 2000 --warmup 200",
     "source_artifacts": [
@@ -15,7 +15,7 @@
       "processor": "AMD64 Family 25 Model 68 Stepping 1, AuthenticAMD",
       "cpu_count": 12
     },
-    "exported_at": "2026-11-09T16:17:27+00:00"
+    "exported_at": "2026-11-09T16:31:25+00:00"
   },
   "limitations": [
     "25-case self-built retrieval set, not an industry benchmark",
