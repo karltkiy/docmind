@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 
+from src.config import settings
 from src.metrics import MetricsMiddleware, render_metrics, route_label
 
 
@@ -47,6 +48,17 @@ async def _asgi_call(app: Any, path: str) -> list[dict]:
     return messages
 
 
+def _header(messages: list[dict], name: str) -> str | None:
+    """Extract a response header from captured ASGI messages."""
+    for message in messages:
+        if message["type"] != "http.response.start":
+            continue
+        for key, value in message.get("headers", []):
+            if key.decode("latin-1").lower() == name.lower():
+                return value.decode("latin-1")
+    return None
+
+
 def test_route_label_collapses_uuids() -> None:
     assert route_label("/api/v1/documents/1f8f2c3a-1111-2222-3333-444455556666/status") == (
         "/api/v1/documents/{id}/status"
@@ -71,6 +83,10 @@ def test_streaming_response_is_not_buffered() -> None:
     messages = asyncio.run(_asgi_call(app, "/stream"))
     bodies = [m for m in messages if m["type"] == "http.response.body"]
 
+    response_time = _header(messages, "x-response-time-ms")
+    assert response_time is not None
+    assert float(response_time) >= 0.0
+
     # A buffering middleware would collapse the three frames into one message.
     assert len(bodies) >= 3
     payload = b"".join(m.get("body", b"") for m in bodies)
@@ -90,3 +106,50 @@ def test_metrics_middleware_records_request() -> None:
     payload, _ = render_metrics()
     assert b"docmind_http_requests_total" in payload
     assert b'path="/ping"' in payload
+
+
+def test_response_time_header_on_json_response() -> None:
+    """Every HTTP response carries a numeric X-Response-Time-Ms header."""
+    app = FastAPI()
+
+    @app.get("/json")
+    async def json_endpoint() -> dict[str, bool]:
+        return {"ok": True}
+
+    app.add_middleware(MetricsMiddleware)
+
+    messages = asyncio.run(_asgi_call(app, "/json"))
+    value = _header(messages, "x-response-time-ms")
+    assert value is not None
+    assert float(value) >= 0.0
+
+
+def test_response_time_header_when_metrics_disabled(monkeypatch) -> None:
+    """The timing header is independent from the METRICS_ENABLED registry flag."""
+    monkeypatch.setattr(settings, "METRICS_ENABLED", False)
+    app = FastAPI()
+
+    @app.get("/off")
+    async def off_endpoint() -> dict[str, bool]:
+        return {"ok": True}
+
+    app.add_middleware(MetricsMiddleware)
+
+    messages = asyncio.run(_asgi_call(app, "/off"))
+    value = _header(messages, "x-response-time-ms")
+    assert value is not None
+    assert float(value) >= 0.0
+
+
+def test_response_time_header_on_not_found() -> None:
+    """Framework-generated 404 responses carry the timing header as well."""
+    app = FastAPI()
+    app.add_middleware(MetricsMiddleware)
+
+    messages = asyncio.run(_asgi_call(app, "/missing"))
+
+    start = next(m for m in messages if m["type"] == "http.response.start")
+    value = _header(messages, "x-response-time-ms")
+    assert start["status"] == 404
+    assert value is not None
+    assert float(value) >= 0.0

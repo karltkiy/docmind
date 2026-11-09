@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,7 @@ from ..db.base import SessionLocal, dispose_engine, engine
 from ..db.models import Document, DocumentChunk, DocumentStatus
 from ..db.schema_guard import verify_embedding_dimension
 from ..logging_config import configure_logging
-from ..metrics import INGESTION_JOBS
+from ..metrics import INGESTION_DURATION, INGESTION_JOBS
 from ..services.chunker import TextChunker
 from ..services.parser import extract_text
 from ..services.rag_engine import rag_engine
@@ -33,6 +34,7 @@ async def process_document_task(ctx: dict[str, Any], document_id: str) -> dict[s
     as ``failed`` with the error message and the exception re-raised so arq can
     retry according to ``max_tries``.
     """
+    started = time.perf_counter()
     doc_uuid = uuid.UUID(document_id)
 
     async with SessionLocal() as session:
@@ -84,14 +86,27 @@ async def process_document_task(ctx: dict[str, Any], document_id: str) -> dict[s
                 .values(status=DocumentStatus.COMPLETED, error=None)
             )
             await session.commit()
+            ingestion_elapsed = time.perf_counter() - started
             INGESTION_JOBS.labels("success").inc()
-            logger.info("Finished document %s with %d chunks.", doc_uuid, len(chunk_texts))
+            INGESTION_DURATION.labels(status="completed").observe(ingestion_elapsed)
+            logger.info(
+                "Finished document %s with %d chunks.",
+                doc_uuid,
+                len(chunk_texts),
+                extra={"ingestion_ms": round(ingestion_elapsed * 1000.0, 2)},
+            )
             return {"document_id": str(doc_uuid), "chunks": len(chunk_texts)}
 
         except Exception as exc:  # noqa: BLE001 - persist failure details
             await session.rollback()
+            ingestion_elapsed = time.perf_counter() - started
             INGESTION_JOBS.labels("failure").inc()
-            logger.exception("Processing failed for document %s", doc_uuid)
+            INGESTION_DURATION.labels(status="failed").observe(ingestion_elapsed)
+            logger.exception(
+                "Processing failed for document %s",
+                doc_uuid,
+                extra={"ingestion_ms": round(ingestion_elapsed * 1000.0, 2)},
+            )
             await session.execute(
                 update(Document)
                 .where(Document.id == doc_uuid)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Annotated
@@ -15,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...db.base import get_session_factory
 from ...db.models import Document
-from ...metrics import CHAT_STREAMS
+from ...metrics import CHAT_STREAMS, CHAT_TTFT, RETRIEVAL_DURATION
 from ...schemas.chat import ChatRequest, ChatSource, SsePayload
 from ...services.rag_engine import rag_engine
 from ...services.vector_store import SearchResult, VectorStore
@@ -97,17 +98,38 @@ async def chat_completion(
 ) -> StreamingResponse:
     """Stream a grounded answer as Server-Sent Events."""
     request_id = getattr(http_request.state, "request_id", "unknown")
+    # TTFT is measured from handler start (not from the first generator resume)
+    # so queueing and embedding time before the first token are included.
+    started = time.perf_counter()
+    first_token_at: float | None = None
 
     async def event_generator() -> AsyncIterator[str]:
+        nonlocal first_token_at
         try:
             embedding = await rag_engine.get_embedding(request.query)
 
             async with session_factory() as session:
-                results = await VectorStore.search_chunks(
-                    session=session,
-                    query_embedding=embedding,
-                    top_k=request.top_k,
-                    document_ids=request.document_ids,
+                retrieval_started = time.perf_counter()
+                try:
+                    results = await VectorStore.search_chunks(
+                        session=session,
+                        query_embedding=embedding,
+                        top_k=request.top_k,
+                        document_ids=request.document_ids,
+                    )
+                except Exception:
+                    RETRIEVAL_DURATION.labels(outcome="error").observe(
+                        time.perf_counter() - retrieval_started
+                    )
+                    raise
+                retrieval_elapsed = time.perf_counter() - retrieval_started
+                RETRIEVAL_DURATION.labels(outcome="success").observe(retrieval_elapsed)
+                logger.info(
+                    "Retrieval completed.",
+                    extra={
+                        "retrieval_ms": round(retrieval_elapsed * 1000.0, 2),
+                        "request_id": request_id,
+                    },
                 )
                 filenames = await _load_filenames(
                     session, {result.chunk.document_id for result in results}
@@ -130,11 +152,18 @@ async def chat_completion(
             prompt = _PROMPT_TEMPLATE.format(context=context, question=request.query)
 
             async for token in rag_engine.generate_answer_stream(prompt):
+                if first_token_at is None:
+                    first_token_at = time.perf_counter()
+                    CHAT_TTFT.labels(outcome="success").observe(first_token_at - started)
                 yield _sse({"type": "token", "content": token})
 
             yield _sse({"type": "done"})
             CHAT_STREAMS.labels("success").inc()
         except Exception:
+            # Record a failed TTFT only when the stream never produced a token;
+            # once a token was emitted the success sample is the honest one.
+            if first_token_at is None:
+                CHAT_TTFT.labels(outcome="error").observe(time.perf_counter() - started)
             # Never leak internal exception details to the client; correlate the
             # opaque message with the server-side traceback via ``request_id``.
             CHAT_STREAMS.labels("error").inc()
