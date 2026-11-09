@@ -1,6 +1,6 @@
 # DocMind static metrics
 
-Generated: 2026-11-09T16:37:13+00:00  
+Generated: 2026-11-09T16:42:22+00:00  
 Python: 3.14.8  
 Platform: Windows-11-10.0.26300-SP0
 
@@ -11,11 +11,11 @@ Methodology: line based: total_lines = every text line; non_empty_lines = lines 
 | Area | Path | Suffix | Files | Total lines | Non-empty | Non-comment |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
 | src | `src` | .py | 30 | 4147 | 3498 | 3371 |
-| tests | `tests` | .py | 20 | 3358 | 2577 | 2512 |
+| tests | `tests` | .py | 20 | 3403 | 2609 | 2544 |
 | eval_python | `eval` | .py | 0 | 0 | 0 | 0 |
 | eval_json | `eval` | .json | 1 | 428 | 428 | 428 |
 | eval_markdown | `eval` | .md | 7 | 258 | 186 | 146 |
-| demo | `demo` | .py | 8 | 3612 | 3079 | 2931 |
+| demo | `demo` | .py | 8 | 3671 | 3132 | 2984 |
 | benchmarks | `benchmarks` | .py | 4 | 1175 | 1046 | 1039 |
 | alembic_versions | `alembic/versions` | .py | 1 | 105 | 91 | 85 |
 
@@ -56,9 +56,9 @@ DocMind metric families: `docmind_app_info`, `docmind_chat_streams`, `docmind_ch
 
 ## Tests and coverage
 
-- Tests collected: 241
+- Tests collected: 243
 - Coverage TOTAL: 70% (520 missed of 1881 statements)
-- Passed / skipped / failed: 239 / 2 / None
+- Passed / skipped / failed: 241 / 2 / None
 
 ## Dependencies
 

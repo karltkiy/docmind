@@ -129,8 +129,8 @@ labelled counters/histograms materialise series only on their first
 
 | Metric | Value |
 | --- | ---: |
-| Tests collected (`pytest --collect-only -q`) | 241 |
-| Tests passed / skipped | 239 / 2 |
+| Tests collected (`pytest --collect-only -q`) | 243 |
+| Tests passed / skipped | 241 / 2 |
 | Coverage TOTAL (`pytest --cov=src --cov-fail-under=60 -q`) | 70% (69.57% exact) |
 | Statements | 1881 |
 | Missed statements | 520 |

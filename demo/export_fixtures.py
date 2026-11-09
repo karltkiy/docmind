@@ -29,6 +29,12 @@ fixtures in memory and fails when the committed ones are out of date. Git
 provenance (commit, dirty flag, export timestamp) is intentionally excluded
 from that comparison — it changes with every commit, while the measurements
 do not.
+
+The source artifacts above are git-ignored, so a clean checkout has none of
+them. In that case ``--check`` cannot re-derive the numbers and instead
+validates what is committed: schema version, kind, provenance, limitations,
+the credential/path filter and the size budget. The value-by-value comparison
+still runs wherever a measurement was performed.
 """
 
 from __future__ import annotations
@@ -646,8 +652,61 @@ def write_fixtures(directory: Path = FIXTURES_DIR) -> int:
     return 0
 
 
+def _missing_sources() -> list[str]:
+    """Return repository-relative names of measurement artifacts this checkout lacks."""
+    missing: list[str] = []
+    if not STATIC_METRICS_PATH.is_file():
+        missing.append(_rel(STATIC_METRICS_PATH))
+    if not MICROBENCH_PATH.is_file():
+        missing.append(_rel(MICROBENCH_PATH))
+    if not sorted(EVAL_REPORTS_DIR.glob("retrieval-fixed-*.json")):
+        missing.append(f"{_rel(EVAL_REPORTS_DIR)}/retrieval-fixed-*.json")
+    return missing
+
+
+def _check_committed_only(directory: Path, missing: list[str]) -> int:
+    """Validate the committed fixtures when the source artifacts are absent."""
+    problems: list[str] = []
+    for kind, filename in FIXTURE_FILES.items():
+        path = directory / filename
+        if not path.is_file():
+            problems.append(f"{_rel(path)}: missing")
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+            document = json.loads(text)
+        except json.JSONDecodeError as exc:
+            problems.append(f"{_rel(path)}: not valid JSON ({exc.msg})")
+            continue
+        if not isinstance(document, dict):
+            problems.append(f"{_rel(path)}: must contain a JSON object")
+            continue
+        if document.get("kind") != kind:
+            problems.append(f"{_rel(path)}: 'kind' is not {kind!r}")
+        for key in ("schema_version", "generated_at", "provenance", "limitations", "payload"):
+            if key not in document:
+                problems.append(f"{_rel(path)}: missing '{key}'")
+        try:
+            _assert_clean(kind, text)
+        except ExportError as exc:
+            problems.append(str(exc))
+    if problems:
+        for problem in problems:
+            print(f"FAIL {problem}", file=sys.stderr)
+        return 1
+    print(
+        "ok: committed fixtures are structurally valid; value comparison skipped "
+        f"because source artifacts are absent ({', '.join(missing)})"
+    )
+    return 0
+
+
 def check_fixtures(directory: Path = FIXTURES_DIR) -> int:
     """Compare a fresh export with the committed fixtures; write nothing."""
+    missing = _missing_sources()
+    if missing:
+        return _check_committed_only(directory, missing)
+
     documents = build_fixtures()
     problems: list[str] = []
     for kind, document in documents.items():

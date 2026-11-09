@@ -32,6 +32,27 @@ def _read(name: str) -> dict[str, Any]:
     return json.loads((FIXTURES_DIR / name).read_text(encoding="utf-8"))
 
 
+def _latest_eval_report() -> Path:
+    """Return the newest local eval report, or skip when none exists.
+
+    ``eval/reports/`` is git-ignored, so a clean CI checkout has nothing to
+    compare the committed fixture against; the comparison is only meaningful
+    where the retrieval evaluation actually ran.
+    """
+    reports = sorted(EVAL_REPORTS_DIR.glob("retrieval-fixed-*.json"))
+    if not reports:
+        pytest.skip("eval reports are git-ignored; run the retrieval evaluation to compare")
+    return reports[-1]
+
+
+def _microbench_run() -> Path:
+    """Return the local benchmark run, or skip when it has not been produced."""
+    path = REPO_ROOT / "benchmarks" / "results" / "latest.json"
+    if not path.is_file():
+        pytest.skip("benchmark results are git-ignored; run 'python -m benchmarks.bench'")
+    return path
+
+
 @pytest.mark.parametrize("name", FIXTURE_FILES)
 def test_fixture_exists_and_is_json(name: str) -> None:
     document = _read(name)
@@ -83,9 +104,7 @@ def test_dataset_checksum_matches_the_repository() -> None:
 
 
 def test_false_positive_rate_matches_the_eval_report() -> None:
-    reports = sorted(EVAL_REPORTS_DIR.glob("retrieval-fixed-*.json"))
-    assert reports, "no eval report to compare the fixture against"
-    report = json.loads(reports[-1].read_text(encoding="utf-8"))
+    report = json.loads(_latest_eval_report().read_text(encoding="utf-8"))
 
     fixture = _read("retrieval_eval.json")["payload"]
 
@@ -95,8 +114,7 @@ def test_false_positive_rate_matches_the_eval_report() -> None:
 
 
 def test_retrieval_aggregates_match_the_eval_report() -> None:
-    reports = sorted(EVAL_REPORTS_DIR.glob("retrieval-fixed-*.json"))
-    report = json.loads(reports[-1].read_text(encoding="utf-8"))
+    report = json.loads(_latest_eval_report().read_text(encoding="utf-8"))
     fixture = _read("retrieval_eval.json")["payload"]
 
     for key in ("hit_at_k", "mrr", "context_recall", "empty_context_rate"):
@@ -106,9 +124,7 @@ def test_retrieval_aggregates_match_the_eval_report() -> None:
 
 
 def test_microbenchmarks_match_the_benchmark_run() -> None:
-    run = json.loads(
-        (REPO_ROOT / "benchmarks" / "results" / "latest.json").read_text(encoding="utf-8")
-    )
+    run = json.loads(_microbench_run().read_text(encoding="utf-8"))
     fixture = _read("microbenchmarks.json")["payload"]
 
     chunker = run["benchmarks"]["chunker"]["median"]
@@ -138,3 +154,32 @@ def test_export_check_passes() -> None:
 
     assert completed.returncode == 0, f"{completed.stdout}\n{completed.stderr}"
     assert "ok:" in completed.stdout.lower()
+
+
+def test_export_check_validates_committed_fixtures_without_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A clean checkout has no measurement artifacts; the check must still run."""
+    from demo import export_fixtures
+
+    monkeypatch.setattr(export_fixtures, "STATIC_METRICS_PATH", tmp_path / "missing_static.json")
+    monkeypatch.setattr(export_fixtures, "MICROBENCH_PATH", tmp_path / "missing_micro.json")
+    monkeypatch.setattr(export_fixtures, "EVAL_REPORTS_DIR", tmp_path / "missing_reports")
+
+    assert export_fixtures.check_fixtures(FIXTURES_DIR) == 0
+
+
+def test_export_check_rejects_a_corrupt_committed_fixture_without_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from demo import export_fixtures
+
+    broken = tmp_path / "metrics_static.json"
+    broken.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(export_fixtures, "STATIC_METRICS_PATH", tmp_path / "missing_static.json")
+    monkeypatch.setattr(export_fixtures, "MICROBENCH_PATH", tmp_path / "missing_micro.json")
+    monkeypatch.setattr(export_fixtures, "EVAL_REPORTS_DIR", tmp_path / "missing_reports")
+
+    assert export_fixtures.check_fixtures(tmp_path) == 1

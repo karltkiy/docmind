@@ -1,6 +1,6 @@
 {
   "meta": {
-    "generated_at": "2026-11-09T16:37:13+00:00",
+    "generated_at": "2026-11-09T16:42:22+00:00",
     "python": "3.14.8",
     "platform": "Windows-11-10.0.26300-SP0",
     "processor": "AMD64 Family 25 Model 68 Stepping 1, AuthenticAMD",
@@ -21,9 +21,9 @@
       },
       "tests": {
         "files": 20,
-        "total_lines": 3358,
-        "non_empty_lines": 2577,
-        "non_comment_lines": 2512,
+        "total_lines": 3403,
+        "non_empty_lines": 2609,
+        "non_comment_lines": 2544,
         "path": "tests",
         "suffixes": [
           ".py"
@@ -61,9 +61,9 @@
       },
       "demo": {
         "files": 8,
-        "total_lines": 3612,
-        "non_empty_lines": 3079,
-        "non_comment_lines": 2931,
+        "total_lines": 3671,
+        "non_empty_lines": 3132,
+        "non_comment_lines": 2984,
         "path": "demo",
         "suffixes": [
           ".py"
@@ -284,12 +284,12 @@
     "json_kib": 15.87
   },
   "tests": {
-    "collected": 241,
+    "collected": 243,
     "exit_code": 0,
     "last_lines": [
       "tests/test_upload_limits.py::test_upload_rejects_empty_file",
       "tests/test_vector_store.py::test_search_converts_cosine_distance_to_similarity",
-      "241 tests collected in 2.50s"
+      "243 tests collected in 2.51s"
     ]
   },
   "coverage": {
@@ -298,7 +298,7 @@
     "missed": 520,
     "coverage_percent": 70,
     "coverage_percent_exact": 69.57,
-    "passed": 239,
+    "passed": 241,
     "skipped": 2,
     "failed": null,
     "total_line": "TOTAL                           1881    520    492     54    70%"
