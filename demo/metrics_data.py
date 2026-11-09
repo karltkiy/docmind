@@ -30,8 +30,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import requests
-
 #: Directory holding the committed fixtures.
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -535,6 +533,20 @@ def _parse_live(payload: Any) -> LiveMetrics:
     )
 
 
+def _requests_module() -> Any:
+    """Return the ``requests`` module, or ``None`` when the demo extra is absent.
+
+    ``requests`` ships with the optional ``[demo]`` extra, but this module is
+    imported by pytest and by the fixture exporter, which run without that
+    extra. The import stays lazy so the data layer is importable everywhere.
+    """
+    try:
+        import requests
+    except ModuleNotFoundError:  # pragma: no cover - depends on the installation
+        return None
+    return requests
+
+
 def load_live_metrics(timeout: float = REQUEST_TIMEOUT) -> LiveMetrics | None:
     """Fetch ``GET {API_BASE_URL}/metrics`` and return a validated snapshot.
 
@@ -550,13 +562,25 @@ def load_live_metrics(timeout: float = REQUEST_TIMEOUT) -> LiveMetrics | None:
     global _last_status, _last_error
     _record_failure(None, "")
 
+    requests_module = _requests_module()
+    if requests_module is None:
+        _record_failure(
+            None,
+            "The optional 'requests' package is not installed, so live counters are "
+            "unavailable. Install the demo extra: pip install -e '.[demo]'.",
+        )
+        return None
+
     url = f"{API_BASE_URL}{METRICS_PATH}"
+    # Resolved through getattr so mypy does not require the optional dependency.
+    timeout_error = getattr(requests_module, "Timeout", OSError)
+    request_error = getattr(requests_module, "RequestException", OSError)
     try:
-        response = requests.get(url, headers=_auth_headers(), timeout=timeout)
-    except requests.Timeout:
+        response = requests_module.get(url, headers=_auth_headers(), timeout=timeout)
+    except timeout_error:
         _record_failure(None, f"Timed out after {timeout:g}s while calling {url}.")
         return None
-    except requests.RequestException as exc:
+    except request_error as exc:
         # Only the exception class is surfaced: the exception text of some
         # transports can echo request details, and request details include the
         # auth header value.

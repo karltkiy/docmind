@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import requests
 
 from demo import metrics_data
 
@@ -271,6 +270,8 @@ def test_format_percent() -> None:
 # Live snapshot
 # ---------------------------------------------------------------------------
 def _patch_get(monkeypatch: pytest.MonkeyPatch, behaviour: Any) -> None:
+    """Patch ``requests.get``; skip when only the base install is present."""
+    requests = pytest.importorskip("requests")
     monkeypatch.setattr(metrics_data, "API_BASE_URL", "http://metrics.test/api/v1")
     monkeypatch.setattr(requests, "get", behaviour)
 
@@ -303,6 +304,8 @@ def test_load_live_metrics_returns_none_on_401(monkeypatch: pytest.MonkeyPatch) 
 def test_load_live_metrics_returns_none_on_connection_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    requests = pytest.importorskip("requests")
+
     def boom(*args: Any, **kwargs: Any) -> None:
         raise requests.ConnectionError("connection refused")
 
@@ -314,6 +317,8 @@ def test_load_live_metrics_returns_none_on_connection_error(
 
 
 def test_load_live_metrics_returns_none_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests = pytest.importorskip("requests")
+
     def slow(*args: Any, **kwargs: Any) -> None:
         raise requests.Timeout("too slow")
 
@@ -321,6 +326,17 @@ def test_load_live_metrics_returns_none_on_timeout(monkeypatch: pytest.MonkeyPat
 
     assert metrics_data.load_live_metrics(timeout=1) is None
     assert "Timed out" in (metrics_data.last_error() or "")
+
+
+def test_load_live_metrics_handles_a_missing_requests_package(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The data layer must stay importable with only the base install present."""
+    monkeypatch.setattr(metrics_data, "_requests_module", lambda: None)
+
+    assert metrics_data.load_live_metrics() is None
+    assert metrics_data.last_status() is None
+    assert "requests" in (metrics_data.last_error() or "")
 
 
 @pytest.mark.parametrize(

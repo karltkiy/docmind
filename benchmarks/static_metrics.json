@@ -1,6 +1,6 @@
 {
   "meta": {
-    "generated_at": "2026-11-09T16:30:25+00:00",
+    "generated_at": "2026-11-09T16:37:13+00:00",
     "python": "3.14.8",
     "platform": "Windows-11-10.0.26300-SP0",
     "processor": "AMD64 Family 25 Model 68 Stepping 1, AuthenticAMD",
@@ -21,9 +21,9 @@
       },
       "tests": {
         "files": 20,
-        "total_lines": 3342,
-        "non_empty_lines": 2566,
-        "non_comment_lines": 2501,
+        "total_lines": 3358,
+        "non_empty_lines": 2577,
+        "non_comment_lines": 2512,
         "path": "tests",
         "suffixes": [
           ".py"
@@ -61,9 +61,9 @@
       },
       "demo": {
         "files": 8,
-        "total_lines": 3588,
-        "non_empty_lines": 3058,
-        "non_comment_lines": 2911,
+        "total_lines": 3612,
+        "non_empty_lines": 3079,
+        "non_comment_lines": 2931,
         "path": "demo",
         "suffixes": [
           ".py"
@@ -211,7 +211,7 @@
   },
   "dependencies": {
     "runtime": 20,
-    "dev": 6,
+    "dev": 7,
     "demo": 2,
     "runtime_requirements": [
       "fastapi>=0.110.0",
@@ -241,7 +241,8 @@
       "pytest-cov>=5.0.0",
       "mypy>=1.8.0",
       "ruff>=0.3.0",
-      "pre-commit>=3.7.0"
+      "pre-commit>=3.7.0",
+      "requests>=2.31.0"
     ],
     "demo_requirements": [
       "streamlit>=1.30.0",
@@ -283,12 +284,12 @@
     "json_kib": 15.87
   },
   "tests": {
-    "collected": 240,
+    "collected": 241,
     "exit_code": 0,
     "last_lines": [
       "tests/test_upload_limits.py::test_upload_rejects_empty_file",
       "tests/test_vector_store.py::test_search_converts_cosine_distance_to_similarity",
-      "240 tests collected in 2.51s"
+      "241 tests collected in 2.50s"
     ]
   },
   "coverage": {
@@ -297,7 +298,7 @@
     "missed": 520,
     "coverage_percent": 70,
     "coverage_percent_exact": 69.57,
-    "passed": 238,
+    "passed": 239,
     "skipped": 2,
     "failed": null,
     "total_line": "TOTAL                           1881    520    492     54    70%"
