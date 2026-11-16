@@ -5,7 +5,7 @@
 # ---------------------------------------------------------------------------
 # Pinned to the interpreter the CI matrix and ``requires-python`` target, so
 # production runs the exact version the test suite exercised.
-FROM python:3.12-slim AS builder
+FROM python:3.15-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -43,7 +43,7 @@ RUN python -m venv /opt/venv \
 # ---------------------------------------------------------------------------
 # Runtime: slim image without any build toolchain.
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS runtime
+FROM python:3.15-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
